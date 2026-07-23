@@ -206,6 +206,9 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Monas Lens local state
+.monascode/
+
 # PyPI configuration file
 .pypirc
 
