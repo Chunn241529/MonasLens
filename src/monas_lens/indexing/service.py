@@ -15,6 +15,7 @@ from monas_lens.config import Settings
 from monas_lens.db.models import IndexRunModel, IndexState, RepositoryModel
 from monas_lens.db.session import Database
 from monas_lens.errors import ErrorCode, MonasLensError
+from monas_lens.graph.builder import GraphBuilder, GraphBuildSummary
 from monas_lens.indexing.contracts import FileCandidate, ParseStatus
 from monas_lens.indexing.scanner import RepositoryScanner
 from monas_lens.indexing.store import StoredFile, StructuralStore
@@ -35,6 +36,10 @@ class IndexSummary(BaseModel):
     deleted_files: int
     failed_files: int
     stale_files: int
+    graph_refreshed_facts: int
+    relationships: int
+    graph_diagnostics: int
+    graph_duration_ms: float
     duration_ms: float
 
 
@@ -49,6 +54,12 @@ class IndexStatus(BaseModel):
     chunks: int
     facts: int
     stale_files: int
+    relationships: int
+    graph_diagnostics: int
+    unresolved_relations: int
+    ambiguous_relations: int
+    unsupported_relations: int
+    graph_dirty: bool
     last_indexed_at: datetime | None
     last_run_id: str | None
 
@@ -68,6 +79,7 @@ class IndexService:
         self._parsers = parsers or ParserRegistry()
         self._repositories = RepositoryService(database, settings)
         self._store = StructuralStore(database)
+        self._graph = GraphBuilder(database)
 
     def build(
         self,
@@ -87,6 +99,7 @@ class IndexService:
     def status(self, identifier: str | Path | None = None) -> IndexStatus:
         repository = self._resolve_repository(identifier)
         counts = self._store.counts(repository.id)
+        graph_counts = self._graph.counts(repository.id)
         with self._database.session() as session:
             last_run = session.scalar(
                 select(IndexRunModel)
@@ -103,6 +116,12 @@ class IndexService:
             chunks=counts.chunks,
             facts=counts.facts,
             stale_files=counts.stale_files,
+            relationships=graph_counts.relationships,
+            graph_diagnostics=graph_counts.diagnostics,
+            unresolved_relations=graph_counts.unresolved,
+            ambiguous_relations=graph_counts.ambiguous,
+            unsupported_relations=graph_counts.unsupported,
+            graph_dirty=self._graph.is_dirty(repository.id),
             last_indexed_at=repository.last_indexed_at,
             last_run_id=last_run.id if last_run is not None else None,
         )
@@ -129,26 +148,42 @@ class IndexService:
             self._set_run_state(repository.id, run_id, IndexState.PARSING)
             stored = self._store.files(repository.id)
             candidates = {candidate.relative_path: candidate for candidate in scan_result.files}
-
+            deletion_paths: list[str] = []
             for relative_path in sorted(stored.keys() - candidates.keys()):
-                if any(
+                protected = any(
                     _scan_issue_protects(issue.relative_path, issue.code, relative_path)
                     for issue in scan_result.issues
-                ):
+                )
+                if protected:
                     unchanged += 1
-                    continue
-                deleted += int(self._store.delete_file(repository.id, relative_path))
-
+                else:
+                    deletion_paths.append(relative_path)
+            parse_candidates: list[FileCandidate] = []
             for candidate in scan_result.files:
-                previous = stored.get(candidate.relative_path)
-                if not self._should_parse(
-                    previous,
+                if self._should_parse(
+                    stored.get(candidate.relative_path),
                     candidate,
                     full=full,
                     retry_failed=retry_failed,
                 ):
+                    parse_candidates.append(candidate)
+                else:
                     unchanged += 1
-                    continue
+
+            planned_paths = {
+                *deletion_paths,
+                *(candidate.relative_path for candidate in parse_candidates),
+            }
+            graph_was_dirty = self._graph.is_dirty(repository.id)
+            previous_keys = self._graph.snapshot_keys(repository.id, planned_paths)
+            changed_paths: set[str] = set()
+
+            for relative_path in deletion_paths:
+                if self._store.delete_file(repository.id, relative_path):
+                    deleted += 1
+                    changed_paths.add(relative_path)
+
+            for candidate in parse_candidates:
                 try:
                     source = self._read_stable_source(candidate)
                     source.decode("utf-8")
@@ -168,6 +203,15 @@ class IndexService:
                     continue
                 self._store.replace_file(repository.id, candidate, extraction)
                 parsed += 1
+                changed_paths.add(candidate.relative_path)
+
+            graph_summary = self._refresh_graph(
+                repository.id,
+                run_id,
+                changed_paths=changed_paths,
+                previous_keys=previous_keys,
+                force_full=graph_was_dirty or full,
+            )
 
             duration_ms = (perf_counter() - start_clock) * 1_000
             counts = self._store.counts(repository.id)
@@ -191,6 +235,10 @@ class IndexService:
                 deleted_files=deleted,
                 failed_files=failed,
                 stale_files=counts.stale_files,
+                graph_refreshed_facts=graph_summary.refreshed_facts,
+                relationships=graph_summary.relationships,
+                graph_diagnostics=graph_summary.diagnostics,
+                graph_duration_ms=graph_summary.duration_ms,
                 duration_ms=round(duration_ms, 3),
             )
         except Exception as exc:
@@ -201,6 +249,32 @@ class IndexService:
                 ErrorCode.INDEX_FAILED,
                 "The structural index run failed.",
             ) from exc
+
+    def _refresh_graph(
+        self,
+        repository_id: str,
+        run_id: str,
+        *,
+        changed_paths: set[str],
+        previous_keys: dict[str, frozenset[str]],
+        force_full: bool,
+    ) -> GraphBuildSummary:
+        if not force_full and not changed_paths:
+            counts = self._graph.counts(repository_id)
+            return GraphBuildSummary(
+                refreshed_facts=0,
+                relationships=counts.relationships,
+                diagnostics=counts.diagnostics,
+                full_rebuild=False,
+                duration_ms=0.0,
+            )
+        self._set_run_state(repository_id, run_id, IndexState.BUILDING_GRAPH)
+        return self._graph.refresh(
+            repository_id,
+            changed_paths=changed_paths,
+            previous_keys=previous_keys,
+            force_full=force_full,
+        )
 
     def _resolve_repository(self, identifier: str | Path | None) -> RepositoryRecord:
         return (

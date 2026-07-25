@@ -8,9 +8,9 @@ machine.
 
 ## Project status
 
-Monas Lens Community is in pre-alpha development. Phase 1 and Phase 2 provide the local
-application foundation and incremental structural repository index. Search, graph retrieval,
-MCP integration, and Pro features are not available yet.
+Monas Lens Community is in pre-alpha development. Phases 1–3 provide the local application
+foundation, incremental structural index, deterministic FTS5 search, and a conservative
+repository relationship graph. MCP integration and Pro features are not available yet.
 
 ## Requirements
 
@@ -32,6 +32,9 @@ uv run monas-lens repo add .
 uv run monas-lens doctor
 uv run monas-lens index build
 uv run monas-lens index status
+uv run monas-lens search normalize_value
+uv run monas-lens graph neighbors normalize_value
+uv run monas-lens graph traverse normalize_value --depth 2 --relations calls,tested_by
 ```
 
 Every command that returns data supports `--json` for machine-readable output.
@@ -52,11 +55,12 @@ The Community edition will provide:
 
 - a local repository scanner;
 - Tree-sitter structural extraction;
-- SQLite metadata and keyword search;
+- SQLite metadata, exact-symbol lookup, and ranked lexical search;
+- a conservative import, call, type, test, and configuration relationship graph;
 - a local MCP server; and
 - focused context retrieval for coding agents.
 
-The initial structural index targets Python, JavaScript, TypeScript, and Dart.
+The structural index targets Python, JavaScript, TypeScript, TSX, and Dart.
 
 The index currently extracts:
 
@@ -65,11 +69,16 @@ The index currently extracts:
 - unresolved import, call, inheritance, implementation, route, decorator, and test facts; and
 - syntax-aware function, method, class, test, and deterministic module-summary chunks.
 
+The Phase 3 graph resolves only unique repository-local targets. Use `graph neighbors` for one
+hop or `graph traverse` for bounded breadth-first traversal. Both support `--direction`,
+`--relations`, repository selection, result caps, and `--json`.
+
 Files are hashed with SHA-256. Unchanged files are not reparsed, changed files are replaced
 atomically, deleted files are removed, and a failed parse preserves the last known-good records.
 
 See [the Phase 1–2 implementation backlog](PHASE_1_2_IMPLEMENTATION_TASKS.md) for the active
-delivery plan.
+structural-index plan and [the Phase 3 backlog](PHASE_3_IMPLEMENTATION_TASKS.md) for search and
+graph work.
 
 For the latest implementation state, validation evidence, and next-session starting point, see
 the [session handoff](docs/SESSION_HANDOFF.md).
@@ -86,7 +95,13 @@ indexes, prompts, diffs, test output, or agent conversations.
 - Route and test recognition is syntax-based and intentionally conservative.
 - Indexing is command-driven; background file watching is not implemented.
 - The bundled parser set is pinned for offline, reproducible installation.
-- FTS5 search, graph resolution, embeddings, retrieval ranking, and MCP are Phase 3–5 work.
+- FTS5 search currently covers paths, symbols, signatures, source chunks, and unresolved syntax
+  facts.
+- Graph resolution covers deterministic imports, basic calls, inheritance, implementation,
+  test-source, and supported configuration-key links; dynamic dispatch and whole-program call
+  analysis are intentionally out of scope.
+- Embeddings, hybrid retrieval ranking, task-oriented context bundles, and MCP are not
+  implemented.
 
 ## License
 

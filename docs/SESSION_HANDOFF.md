@@ -4,20 +4,22 @@ Cập nhật lần cuối: 2026-07-24
 
 ## Mục đích
 
-Tài liệu này là điểm bắt đầu cho phiên Codex tiếp theo. Hãy đọc tài liệu này trước khi
-thay đổi code, sau đó đọc các ADR và báo cáo validation được liên kết bên dưới.
+Đây là điểm bắt đầu cho phiên Codex tiếp theo. Phase 3 đã hoàn tất; không tiếp tục thêm hạng mục
+P3 nếu không phát hiện regression. Đọc tài liệu này, backlog Phase 3, ADR 0003, báo cáo
+validation và roadmap gốc trước khi thay đổi code.
 
-## Trạng thái Git và giấy phép
+## Trạng thái Git
 
 - Workspace: `D:\project\MonasLens`
-- Nhánh hiện tại: `main`, theo dõi `origin/main`
+- Nhánh: `main`, theo dõi `origin/main`
 - Remote: `https://github.com/Chunn241529/MonasLens.git`
-- GitHub được xác nhận là public vào ngày 2026-07-23.
-- Giấy phép: Apache-2.0.
-- Toàn bộ phần triển khai Phase 1–2 hiện vẫn ở local, chưa commit và chưa push.
-- `.gitignore` đã được sửa; các file ứng dụng, test, CI và tài liệu mới đang untracked.
+- Giấy phép: Apache-2.0; GitHub được xác nhận public ngày 2026-07-23.
+- Phase 1–2 đã được commit tại `a651e11` (`phase 1,2`).
+- Toàn bộ P3-01 đến P3-08 đang ở worktree local, chưa commit và chưa push.
+- Không reset, xóa hoặc ghi đè các thay đổi local Phase 3.
+- Worktree hiện không có defect Phase 3 đã biết hoặc quality gate chưa đạt.
 
-Không được reset, xóa hoặc ghi đè các thay đổi local này. Trước khi tiếp tục, luôn chạy:
+Luôn kiểm tra trước khi tiếp tục:
 
 ```console
 git status --short --branch
@@ -28,71 +30,99 @@ git diff --check
 
 ### Phase 1 — Local application foundation
 
-- Package Python 3.12, `uv.lock`, CLI `monas-lens` và workflow CI Windows/Linux.
-- Pydantic settings với thứ tự ưu tiên TOML, biến môi trường và CLI override.
-- Structured logging, đường dẫn local an toàn và mã lỗi CLI ổn định.
-- SQLite với WAL, foreign keys, busy timeout và SQLAlchemy 2.
-- Alembic migration có thể nâng/hạ phiên bản:
-  - `0001_foundation`
-  - `0002_structural_index`
-- Quản lý repository: add, list, use, status và remove metadata.
-- FastAPI health endpoints: `/health/live` và `/health/ready`.
+- Package Python 3.12, CLI `monas-lens`, dependency lock và CI Windows/Linux.
+- Pydantic settings, structured logging, đường dẫn local an toàn và mã lỗi ổn định.
+- SQLite WAL, foreign keys, busy timeout và SQLAlchemy 2.
+- Repository lifecycle và FastAPI health/readiness.
 
 ### Phase 2 — Incremental structural index
 
-- Scanner xác định thứ tự ổn định, hỗ trợ `.gitignore` lồng nhau và negation.
-- Loại trừ symlink, binary, generated, file quá kích thước và các thư mục mặc định.
-- SHA-256 hashing và incremental add/update/delete.
-- Tree-sitter parser chạy offline cho Python, JavaScript, TypeScript, TSX và Dart.
-- Trích xuất symbol, signature, parameter, return type, docstring, chunk và syntax fact.
-- Ghi dữ liệu atomic theo file, cascade deletion và last-known-good khi parse lỗi.
-- Full rebuild, retry failed, stale-file tracking và repository-level locking.
-- JSON output cho các lệnh CLI phục vụ automation.
+- Scanner ổn định, `.gitignore` lồng nhau, negation và bộ lọc file an toàn.
+- Tree-sitter offline cho Python, JavaScript, TypeScript, TSX và Dart.
+- Symbol, signature, parameter, return type, docstring, chunk và syntax fact.
+- Incremental add/update/delete, full rebuild, locking và stale-file tracking.
+- Ghi atomic theo file và bảo toàn last-known-good khi parse thất bại.
 
-## Kết quả validation gần nhất
+### Phase 3 — Search and relationship graph
 
-Validation đầy đủ được thực hiện ngày 2026-07-23:
+- Migration có thể nâng/hạ:
+  - `0001_foundation`
+  - `0002_structural_index`
+  - `0003_search_index`
+  - `0004_relationship_graph`
+- SQLite FTS5 projection, trigger đồng bộ và backfill dữ liệu Phase 2.
+- Exact symbol/qualified-name lookup trước lexical ranking có giới hạn.
+- Kết quả search deterministic, repository-scoped, deduplicate và có snippet/range.
+- Normalizer fact thuần cho năm ngôn ngữ, tách module/path, symbol và configuration target.
+- Graph bảo thủ với `imports`, `calls`, `inherits`, `implements`, `tested_by`,
+  `configured_by`.
+- Ambiguous, unresolved và unsupported target tạo diagnostic, không tạo cạnh suy đoán.
+- Edge ID ổn định; graph refresh theo changed file và dependency key của inbound fact.
+- Last-known-good structural, lexical và graph được giữ nguyên khi replacement thất bại.
+- Graph query one-hop và traversal có direction, relation filter, depth/result cap, chống cycle.
+- CLI:
+  - `monas-lens search`
+  - `monas-lens graph neighbors`
+  - `monas-lens graph traverse`
+  - `monas-lens index status` có graph counts và diagnostic counts.
+- Benchmark lặp lại được tại `benchmarks/phase3_search_graph.py`.
 
-- Ruff format: đạt.
+## Validation gần nhất
+
+Validation đầy đủ ngày 2026-07-24:
+
+- Ruff format: đạt, 58 file.
 - Ruff lint: đạt.
-- Pyright: `0 errors`, `0 warnings`.
-- Pytest: `39 passed`, `1 skipped`.
-- Coverage: `86.72%`, cao hơn ngưỡng bắt buộc `85%`.
-- Test symlink bị skip trên máy Windows hiện tại vì process không có quyền tạo symlink;
-  test vẫn được bật trên Linux CI.
-- `uv lock --check`: đạt, khóa 46 package.
-- `uv build`: tạo thành công source distribution và wheel.
-- Wheel được cài trong môi trường isolated, CLI hoạt động.
-- `monas-lens doctor --json` xác nhận migration `0002_structural_index` và cả năm parser
-  đều sẵn sàng.
+- Pyright strict: `0 errors`, `0 warnings`.
+- Pytest: `81 passed`, `1 skipped`.
+- Coverage: `89.76%`, vượt ngưỡng `85%`.
+- Test symlink bị skip trên Windows do process không có quyền tạo symlink; vẫn bật trên Linux CI.
+- `uv lock --check`: đạt, 46 package.
+- `uv build`: tạo thành công sdist và wheel.
+- `git diff --check`: đạt, chỉ có cảnh báo chuyển đổi line ending trên Windows.
+- Wheel được cài offline trong môi trường Python 3.12 isolated.
+- Wheel smoke đã init database, index 58 file, tạo 903 relationship, search và graph query thành
+  công.
+- Downgrade database có dữ liệu `0004 → 0003 → 0002`, sau đó upgrade/backfill về head: đạt.
+- Mixed-language build, no-op, update, rename, delete, parse failure, recovery và repository
+  isolation: đạt.
 
-Baseline self-index:
+Benchmark fixture bảy file, 20 vòng:
 
-| Chỉ số | Full rebuild | Lần chạy không đổi |
+| Chỉ số | Median | p95 |
 |---|---:|---:|
-| File hợp lệ | 43 | 43 |
-| File được parse | 43 | 0 |
-| File không đổi | 0 | 43 |
-| File lỗi hoặc stale | 0 | 0 |
-| Thời gian | 744.971 ms | 92.879 ms |
+| Exact lookup | 0.728 ms | 0.878 ms |
+| FTS ranking | 0.652 ms | 0.729 ms |
+| Graph one-hop | 1.969 ms | 2.190 ms |
 
-Dữ liệu structural đã lưu gồm 315 symbols, 288 chunks và 1.798 unresolved syntax facts.
-Đây là baseline trên máy phát triển, không phải cam kết hiệu năng đa nền tảng.
+Full index mất 138.021 ms, full graph build 11.858 ms; one-file incremental index mất
+47.909 ms và graph refresh 6.636 ms. Đây là baseline local, không phải cam kết đa nền tảng.
 
-## Lệnh khởi động lại công việc
+## Điểm dừng chính xác
+
+- P3-01 đến P3-08 đã hoàn tất và backlog Phase 3 đã chuyển sang trạng thái delivered.
+- Không còn bước triển khai hoặc validation Phase 3 bắt buộc.
+- Sản phẩm build được; wheel isolated đã chạy được migration, index, search và graph query.
+- Chưa có quyết định triển khai Phase 4 và chưa tạo backlog Phase 4.
+- Bước tiếp theo theo roadmap gốc là **Phase 4 — Context Compiler**, không phải semantic
+  embeddings. Phạm vi roadmap gồm Task Resolver, Parallel Retriever, Ranker, Confidence Gate,
+  Context Bundle và Token Estimator.
+
+## Lệnh khởi động lại
 
 ```console
 cd D:\project\MonasLens
 uv sync --locked --all-groups
-uv run monas-lens --version
 uv run monas-lens init
 uv run monas-lens repo add .
-uv run monas-lens doctor
 uv run monas-lens index build
-uv run monas-lens index status
+uv run monas-lens index status --json
+uv run monas-lens search GraphService --json
+uv run monas-lens graph neighbors GraphService.neighbors --relations calls --json
+uv run monas-lens graph traverse GraphService.neighbors --depth 2 --json
 ```
 
-Chạy toàn bộ quality gate trước khi commit:
+Quality gate:
 
 ```console
 uv run ruff format --check .
@@ -106,34 +136,38 @@ git diff --check
 
 ## Điểm bắt đầu đề xuất cho phiên sau
 
-1. Kiểm tra `git status` và bảo toàn toàn bộ thay đổi Phase 1–2.
-2. Đọc backlog, hai ADR và báo cáo validation.
-3. Review diff Phase 1–2.
-4. Chỉ commit/push khi có yêu cầu rõ ràng của người dùng.
-5. Sau khi Phase 1–2 được chấp nhận, chọn backlog tiếp theo; các hạng mục đang để lại gồm
-   FTS5, relationship graph, resolver/ranking, MCP, watcher, embeddings và Pro/Team.
+1. Kiểm tra và bảo toàn toàn bộ diff local P3-01 đến P3-08.
+2. Đọc `PHASE_3_IMPLEMENTATION_TASKS.md`, ADR 0003, `PHASE_3_VALIDATION.md` và mục
+   `Phase 4 — Context Compiler` trong `Monas_Lens_Full_Plan_v2.md`.
+3. Không chạy lại toàn bộ Phase 3 hoặc sửa code Phase 3 nếu không có regression/evidence mới.
+4. Không commit hoặc push nếu người dùng chưa yêu cầu rõ ràng.
+5. Nếu người dùng yêu cầu tiếp tục roadmap, tạo `PHASE_4_IMPLEMENTATION_TASKS.md` trước khi code;
+   chia nhỏ Task Resolver, Parallel Retriever, Ranker, Confidence Gate, Context Bundle và Token
+   Estimator thành task có dependency, exit criteria, test và performance gate.
+6. Chỉ bắt đầu P4-01 sau khi backlog Phase 4 đã chốt contract đầu vào/đầu ra và ranh giới với
+   search/graph hiện có.
 
 ## Giới hạn hiện tại
 
-- Source file phải là UTF-8.
-- Symlink bị bỏ qua.
-- Route và test detection được thiết kế bảo thủ.
-- Chưa có background watcher.
-- Chưa có FTS5 search, graph resolution, embeddings, ranking hoặc MCP.
+- Source phải là UTF-8; symlink bị bỏ qua.
+- Import/call resolution là static, repository-local và cố ý bảo thủ.
+- Dynamic dispatch, runtime loading, generated dependency injection và whole-program call
+  analysis chưa được mô hình hóa.
+- Test/configuration detection chỉ hỗ trợ các syntax form đã khai báo.
+- Chưa có background watcher, embeddings, hybrid ranking, context compiler hoặc MCP.
 - Chưa có licensing, payment, Pro hoặc Team functionality.
 
-## Quyết định và ràng buộc của phiên trước
+## Ràng buộc phiên này
 
-- FourTIndex không được sử dụng trong phiên triển khai Phase 1–2 theo yêu cầu của người dùng.
-- Quyết định này chỉ ghi nhận lịch sử phiên trước; phiên sau phải tuân theo yêu cầu mới nhất
-  của người dùng và hướng dẫn hiện hành.
-- Không có commit hoặc push nào được thực hiện.
+- Không sử dụng FourTIndex theo yêu cầu của người dùng.
+- Không commit hoặc push phần triển khai Phase 3.
 
 ## Tài liệu cần đọc
 
-- [`../PHASE_1_2_IMPLEMENTATION_TASKS.md`](../PHASE_1_2_IMPLEMENTATION_TASKS.md)
+- [`../Monas_Lens_Full_Plan_v2.md`](../Monas_Lens_Full_Plan_v2.md)
+- [`../PHASE_3_IMPLEMENTATION_TASKS.md`](../PHASE_3_IMPLEMENTATION_TASKS.md)
+- [`PHASE_3_VALIDATION.md`](PHASE_3_VALIDATION.md)
+- [`PHASE_3_LEXICAL_SEARCH_VALIDATION.md`](PHASE_3_LEXICAL_SEARCH_VALIDATION.md)
 - [`PHASE_1_2_VALIDATION.md`](PHASE_1_2_VALIDATION.md)
-- [`architecture/0001-local-foundation.md`](architecture/0001-local-foundation.md)
-- [`architecture/0002-structural-index.md`](architecture/0002-structural-index.md)
+- [`architecture/0003-lexical-search-and-graph-foundation.md`](architecture/0003-lexical-search-and-graph-foundation.md)
 - [`../README.md`](../README.md)
-

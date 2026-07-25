@@ -20,11 +20,19 @@ from monas_lens.config import (
 from monas_lens.db.migration import database_is_current, upgrade_database
 from monas_lens.db.session import Database
 from monas_lens.errors import ErrorCode, MonasLensError
+from monas_lens.graph.contracts import GraphDirection
+from monas_lens.graph.service import (
+    GraphResponse,
+    GraphService,
+    parse_graph_direction,
+    parse_relation_kinds,
+)
 from monas_lens.health import CheckResult, readiness_report
 from monas_lens.indexing.service import IndexService, IndexStatus, IndexSummary
 from monas_lens.logging_config import configure_logging, operation_context
 from monas_lens.parsing.registry import ParserRegistry
 from monas_lens.repositories import RepositoryRecord, RepositoryService
+from monas_lens.search.service import SearchResponse, SearchService
 
 app = typer.Typer(
     add_completion=False,
@@ -33,8 +41,10 @@ app = typer.Typer(
 )
 repo_app = typer.Typer(help="Register and select local repositories.")
 index_app = typer.Typer(help="Build and inspect the structural repository index.")
+graph_app = typer.Typer(help="Query resolved repository relationships.")
 app.add_typer(repo_app, name="repo")
 app.add_typer(index_app, name="index")
+app.add_typer(graph_app, name="graph")
 
 _EXIT_CODES = {
     ErrorCode.CONFIGURATION_INVALID: 2,
@@ -42,6 +52,8 @@ _EXIT_CODES = {
     ErrorCode.PATH_OUTSIDE_REPOSITORY: 2,
     ErrorCode.REPOSITORY_NOT_FOUND: 3,
     ErrorCode.REPOSITORY_LOCKED: 4,
+    ErrorCode.GRAPH_QUERY_INVALID: 2,
+    ErrorCode.SEARCH_QUERY_INVALID: 2,
     ErrorCode.DATABASE_NOT_INITIALIZED: 5,
     ErrorCode.DATABASE_UNAVAILABLE: 5,
     ErrorCode.PARSER_UNAVAILABLE: 6,
@@ -309,6 +321,143 @@ def index_status(
         _emit_index_status(status, json_output)
 
 
+@app.command("search")
+def search_repository(
+    context: typer.Context,
+    query: Annotated[str, typer.Argument(help="Symbol, path, signature, or source terms.")],
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            min=1,
+            max=100,
+            help="Maximum number of results.",
+        ),
+    ] = 20,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Search the local structural index."""
+    with _command_errors(context, json_output):
+        with _search_service(context) as service:
+            response = service.search(query, identifier, limit=limit)
+        _emit_search_response(response, json_output)
+
+
+@graph_app.command("neighbors")
+def graph_neighbors(
+    context: typer.Context,
+    target: Annotated[
+        str,
+        typer.Argument(help="Symbol ID, qualified name, name, file ID, or path."),
+    ],
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    direction: Annotated[
+        str,
+        typer.Option(
+            "--direction",
+            help="Relationship direction: outgoing, incoming, or both.",
+        ),
+    ] = GraphDirection.BOTH.value,
+    relations: Annotated[
+        str | None,
+        typer.Option(
+            "--relations",
+            help="Comma-separated relationship kinds.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", help="Maximum number of edges (1-500)."),
+    ] = 50,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Return direct incoming or outgoing relationships."""
+    with _command_errors(context, json_output):
+        with _graph_service(context) as service:
+            response = service.neighbors(
+                target,
+                identifier,
+                direction=parse_graph_direction(direction),
+                relation_kinds=parse_relation_kinds(relations),
+                limit=limit,
+            )
+        _emit_graph_response(response, json_output)
+
+
+@graph_app.command("traverse")
+def graph_traverse(
+    context: typer.Context,
+    target: Annotated[
+        str,
+        typer.Argument(help="Symbol ID, qualified name, name, file ID, or path."),
+    ],
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    direction: Annotated[
+        str,
+        typer.Option(
+            "--direction",
+            help="Relationship direction: outgoing, incoming, or both.",
+        ),
+    ] = GraphDirection.BOTH.value,
+    relations: Annotated[
+        str | None,
+        typer.Option(
+            "--relations",
+            help="Comma-separated relationship kinds.",
+        ),
+    ] = None,
+    depth: Annotated[
+        int,
+        typer.Option("--depth", help="Traversal depth (1-5)."),
+    ] = 2,
+    limit: Annotated[
+        int,
+        typer.Option("--limit", help="Maximum number of edges (1-500)."),
+    ] = 200,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Traverse repository relationships with bounded breadth-first search."""
+    with _command_errors(context, json_output):
+        with _graph_service(context) as service:
+            response = service.traverse(
+                target,
+                identifier,
+                direction=parse_graph_direction(direction),
+                relation_kinds=parse_relation_kinds(relations),
+                depth=depth,
+                limit=limit,
+            )
+        _emit_graph_response(response, json_output)
+
+
 def _load_runtime_settings(context: typer.Context) -> Settings:
     settings = load_settings()
     configure_logging(settings, debug=bool(context.obj.get("debug", False)))
@@ -316,7 +465,7 @@ def _load_runtime_settings(context: typer.Context) -> Settings:
 
 
 @contextmanager
-def _repository_service(context: typer.Context) -> Generator[RepositoryService]:
+def _ready_database(context: typer.Context) -> Generator[tuple[Database, Settings]]:
     settings = _load_runtime_settings(context)
     if settings.database_path is None or not settings.database_path.exists():
         raise MonasLensError(
@@ -330,29 +479,33 @@ def _repository_service(context: typer.Context) -> Generator[RepositoryService]:
                 ErrorCode.DATABASE_NOT_INITIALIZED,
                 "The local database requires initialization or migration.",
             )
-        yield RepositoryService(database, settings)
+        yield database, settings
     finally:
         database.dispose()
 
 
 @contextmanager
+def _repository_service(context: typer.Context) -> Generator[RepositoryService]:
+    with _ready_database(context) as (database, settings):
+        yield RepositoryService(database, settings)
+
+
+@contextmanager
 def _index_service(context: typer.Context) -> Generator[IndexService]:
-    settings = _load_runtime_settings(context)
-    if settings.database_path is None or not settings.database_path.exists():
-        raise MonasLensError(
-            ErrorCode.DATABASE_NOT_INITIALIZED,
-            "Monas Lens is not initialized. Run `monas-lens init` first.",
-        )
-    database = Database(settings)
-    try:
-        if not database_is_current(database.engine):
-            raise MonasLensError(
-                ErrorCode.DATABASE_NOT_INITIALIZED,
-                "The local database requires initialization or migration.",
-            )
+    with _ready_database(context) as (database, settings):
         yield IndexService(database, settings)
-    finally:
-        database.dispose()
+
+
+@contextmanager
+def _search_service(context: typer.Context) -> Generator[SearchService]:
+    with _ready_database(context) as (database, settings):
+        yield SearchService(database, settings)
+
+
+@contextmanager
+def _graph_service(context: typer.Context) -> Generator[GraphService]:
+    with _ready_database(context) as (database, settings):
+        yield GraphService(database, settings)
 
 
 @contextmanager
@@ -397,6 +550,9 @@ def _emit_index_summary(summary: IndexSummary, json_output: bool) -> None:
             f"Scanned: {summary.scanned_files}, parsed: {summary.parsed_files}, "
             f"unchanged: {summary.unchanged_files}, deleted: {summary.deleted_files}, "
             f"failed: {summary.failed_files}, stale: {summary.stale_files}\n"
+            f"Relationships: {summary.relationships}, diagnostics: "
+            f"{summary.graph_diagnostics}, refreshed facts: "
+            f"{summary.graph_refreshed_facts}\n"
             f"Duration: {summary.duration_ms:.3f} ms"
         ),
     )
@@ -411,8 +567,62 @@ def _emit_index_status(status: IndexStatus, json_output: bool) -> None:
             f"State: {status.state}\n"
             f"Files: {status.files}, symbols: {status.symbols}, "
             f"chunks: {status.chunks}, facts: {status.facts}, "
-            f"stale files: {status.stale_files}"
+            f"stale files: {status.stale_files}\n"
+            f"Relationships: {status.relationships}, graph diagnostics: "
+            f"{status.graph_diagnostics} "
+            f"(unresolved: {status.unresolved_relations}, "
+            f"ambiguous: {status.ambiguous_relations}, "
+            f"unsupported: {status.unsupported_relations}), "
+            f"graph dirty: {status.graph_dirty}"
         ),
+    )
+
+
+def _emit_search_response(response: SearchResponse, json_output: bool) -> None:
+    if not response.results:
+        human_message = f"No results for: {response.query}"
+    else:
+        lines: list[str] = []
+        for position, result in enumerate(response.results, start=1):
+            label = result.qualified_name or result.name or result.kind
+            lines.append(
+                f"{position}. {label} [{result.match_type}, {result.score:.3f}]\n"
+                f"   {result.relative_path}:{result.start_line}-{result.end_line}\n"
+                f"   {result.snippet}"
+            )
+        human_message = "\n".join(lines)
+    _emit(
+        response.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=human_message,
+    )
+
+
+def _emit_graph_response(response: GraphResponse, json_output: bool) -> None:
+    node_labels = {
+        node.id: node.qualified_name or node.name or node.relative_path for node in response.nodes
+    }
+    edge_lines = [
+        (
+            f"{edge.kind}: {node_labels[edge.source_id]} -> "
+            f"{node_labels[edge.target_id]} "
+            f"[{edge.resolution_strategy}, {edge.confidence:.2f}]"
+        )
+        for edge in response.edges
+    ]
+    root_label = response.root.qualified_name or response.root.name or response.root.relative_path
+    human_message = "\n".join(
+        [
+            f"Graph for {root_label}: {len(response.edges)} relationship(s), "
+            f"{len(response.nodes)} node(s)",
+            *edge_lines,
+            *(["Result limit reached; traversal was truncated."] if response.truncated else []),
+        ]
+    )
+    _emit(
+        response.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=human_message,
     )
 
 

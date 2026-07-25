@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from hashlib import sha256
@@ -45,6 +46,7 @@ class TreeSitterAdapter(ABC):
     call_node_types: frozenset[str] = frozenset()
     inheritance_node_types: frozenset[str] = frozenset()
     decorator_node_types: frozenset[str] = frozenset()
+    configuration_patterns: tuple[re.Pattern[bytes], ...] = ()
 
     def __init__(self, parser: Parser) -> None:
         self._parser = parser
@@ -98,6 +100,7 @@ class TreeSitterAdapter(ABC):
                 visit(child, current_parent)
 
         visit(tree.root_node, None)
+        facts.extend(self._configuration_facts(relative_path, source, symbols))
         symbols.sort(key=lambda item: (item.source_range.start_byte, item.id))
         facts.sort(key=lambda item: (item.source_range.start_byte, item.id))
         chunks = build_chunks(relative_path, source, symbols)
@@ -119,6 +122,9 @@ class TreeSitterAdapter(ABC):
 
     def symbol_name_node(self, node: Node, source: bytes) -> Node | None:
         return node.child_by_field_name("name")
+
+    def symbol_name(self, node: Node, name_node: Node, source: bytes) -> str:
+        return node_text(name_node, source).strip()
 
     def parameters_node(self, node: Node) -> Node | None:
         parameters = node.child_by_field_name("parameters")
@@ -162,6 +168,8 @@ class TreeSitterAdapter(ABC):
         if node.type in self.export_node_types:
             return FactKind.EXPORT
         if node.type in self.call_node_types:
+            if self._configuration_key(source[node.start_byte : node.end_byte]) is not None:
+                return None
             return FactKind.CALL
         if node.type in self.inheritance_node_types:
             return FactKind.INHERITS
@@ -188,7 +196,7 @@ class TreeSitterAdapter(ABC):
         name_node = self.symbol_name_node(node, source)
         if name_node is None:
             return None
-        name = node_text(name_node, source).strip()
+        name = self.symbol_name(node, name_node, source)
         if not name:
             return None
         qualified_name = f"{parent.qualified_name}.{name}" if parent else name
@@ -259,6 +267,52 @@ class TreeSitterAdapter(ABC):
             source_symbol_id=parent.id if parent else None,
         )
 
+    def _configuration_facts(
+        self,
+        relative_path: str,
+        source: bytes,
+        symbols: list[ExtractedSymbol],
+    ) -> tuple[SyntaxFact, ...]:
+        facts: list[SyntaxFact] = []
+        seen: set[tuple[int, int, str]] = set()
+        for pattern in self.configuration_patterns:
+            for matched in pattern.finditer(source):
+                key = matched.group("key").decode("utf-8", errors="strict")
+                identity = (matched.start(), matched.end(), key)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                owner = _smallest_owning_symbol(symbols, matched.start(), matched.end())
+                facts.append(
+                    SyntaxFact(
+                        id=stable_id(
+                            "fact",
+                            relative_path,
+                            FactKind.CONFIGURATION.value,
+                            owner.id if owner is not None else "",
+                            key,
+                            matched.start(),
+                        ),
+                        kind=FactKind.CONFIGURATION,
+                        target_text=key,
+                        source_range=source_range_from_bytes(
+                            source,
+                            matched.start(),
+                            matched.end(),
+                        ),
+                        source_symbol_id=owner.id if owner is not None else None,
+                        metadata={"configuration_key": True},
+                    )
+                )
+        return tuple(facts)
+
+    def _configuration_key(self, value: bytes) -> str | None:
+        for pattern in self.configuration_patterns:
+            matched = pattern.search(value)
+            if matched is not None:
+                return matched.group("key").decode("utf-8", errors="strict")
+        return None
+
     @staticmethod
     def is_method(parent: ParentSymbol | None) -> bool:
         return parent is not None and parent.kind in _CLASS_KINDS
@@ -272,6 +326,21 @@ def source_range(node: Node) -> SourceRange:
         end_line=node.end_point.row + 1,
         start_column=node.start_point.column,
         end_column=node.end_point.column,
+    )
+
+
+def source_range_from_bytes(source: bytes, start_byte: int, end_byte: int) -> SourceRange:
+    start_line = source.count(b"\n", 0, start_byte) + 1
+    end_line = source.count(b"\n", 0, end_byte) + 1
+    start_line_offset = source.rfind(b"\n", 0, start_byte) + 1
+    end_line_offset = source.rfind(b"\n", 0, end_byte) + 1
+    return SourceRange(
+        start_byte=start_byte,
+        end_byte=end_byte,
+        start_line=start_line,
+        end_line=end_line,
+        start_column=start_byte - start_line_offset,
+        end_column=end_byte - end_line_offset,
     )
 
 
@@ -292,6 +361,26 @@ def first_named_descendant(node: Node, node_types: set[str]) -> Node | None:
 
 def _node_key(node: Node) -> tuple[int, int, str]:
     return (node.start_byte, node.end_byte, node.type)
+
+
+def _smallest_owning_symbol(
+    symbols: list[ExtractedSymbol],
+    start_byte: int,
+    end_byte: int,
+) -> ExtractedSymbol | None:
+    candidates = [
+        symbol
+        for symbol in symbols
+        if symbol.source_range.start_byte <= start_byte and symbol.source_range.end_byte >= end_byte
+    ]
+    return min(
+        candidates,
+        key=lambda symbol: (
+            symbol.source_range.end_byte - symbol.source_range.start_byte,
+            symbol.id,
+        ),
+        default=None,
+    )
 
 
 def build_chunks(

@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
 from monas_lens.db.models import (
     ChunkModel,
     FileModel,
+    RepositoryModel,
+    SearchDocumentModel,
     SymbolModel,
     SyntaxFactModel,
     utc_now,
@@ -81,6 +84,9 @@ class StructuralStore:
                 session.add(model)
                 session.flush()
             else:
+                session.execute(
+                    delete(SearchDocumentModel).where(SearchDocumentModel.file_id == file_id)
+                )
                 session.execute(delete(ChunkModel).where(ChunkModel.file_id == file_id))
                 session.execute(delete(SyntaxFactModel).where(SyntaxFactModel.file_id == file_id))
                 session.execute(delete(SymbolModel).where(SymbolModel.file_id == file_id))
@@ -138,6 +144,15 @@ class StructuralStore:
                     for fact in extraction.facts
                 ]
             )
+            session.add_all(
+                _search_documents(
+                    repository_id,
+                    file_id,
+                    candidate,
+                    extraction,
+                    symbol_ids,
+                )
+            )
             model.language = candidate.language.value
             model.size_bytes = candidate.size_bytes
             model.mtime_ns = candidate.mtime_ns
@@ -159,6 +174,7 @@ class StructuralStore:
             model.chunk_count = len(extraction.chunks)
             model.fact_count = len(extraction.facts)
             model.indexed_at = utc_now()
+            _mark_graph_dirty(session, repository_id)
             session.commit()
 
     def record_failure(
@@ -211,6 +227,7 @@ class StructuralStore:
             if model is None:
                 return False
             session.delete(model)
+            _mark_graph_dirty(session, repository_id)
             session.commit()
             return True
 
@@ -288,6 +305,90 @@ def _symbol_model(
     )
 
 
+def _search_documents(
+    repository_id: str,
+    file_id: str,
+    candidate: FileCandidate,
+    extraction: ExtractionResult,
+    symbol_ids: dict[str, str],
+) -> list[SearchDocumentModel]:
+    symbols_by_id = {symbol.id: symbol for symbol in extraction.symbols}
+    end_line = max(
+        (
+            item.source_range.end_line
+            for item in (*extraction.symbols, *extraction.chunks, *extraction.facts)
+        ),
+        default=1,
+    )
+    documents = [
+        SearchDocumentModel(
+            repository_id=repository_id,
+            file_id=file_id,
+            entity_type="file",
+            entity_id=file_id,
+            language=candidate.language.value,
+            kind="file",
+            relative_path=candidate.relative_path,
+            body="",
+            start_line=1,
+            end_line=end_line,
+        )
+    ]
+    documents.extend(
+        SearchDocumentModel(
+            repository_id=repository_id,
+            file_id=file_id,
+            entity_type="symbol",
+            entity_id=symbol_ids[symbol.id],
+            language=candidate.language.value,
+            kind=symbol.kind.value,
+            relative_path=candidate.relative_path,
+            name=symbol.name,
+            qualified_name=symbol.qualified_name,
+            signature=symbol.signature,
+            body=symbol.docstring or "",
+            start_line=symbol.source_range.start_line,
+            end_line=symbol.source_range.end_line,
+        )
+        for symbol in extraction.symbols
+    )
+    for chunk in extraction.chunks:
+        owner = symbols_by_id.get(chunk.symbol_id) if chunk.symbol_id is not None else None
+        documents.append(
+            SearchDocumentModel(
+                repository_id=repository_id,
+                file_id=file_id,
+                entity_type="chunk",
+                entity_id=stable_id("db-chunk", repository_id, chunk.id),
+                language=candidate.language.value,
+                kind=chunk.kind.value,
+                relative_path=candidate.relative_path,
+                name=owner.name if owner is not None else None,
+                qualified_name=owner.qualified_name if owner is not None else None,
+                signature=owner.signature if owner is not None else None,
+                body=chunk.source_text,
+                start_line=chunk.source_range.start_line,
+                end_line=chunk.source_range.end_line,
+            )
+        )
+    documents.extend(
+        SearchDocumentModel(
+            repository_id=repository_id,
+            file_id=file_id,
+            entity_type="fact",
+            entity_id=stable_id("db-fact", repository_id, fact.id),
+            language=candidate.language.value,
+            kind=fact.kind.value,
+            relative_path=candidate.relative_path,
+            body=fact.target_text,
+            start_line=fact.source_range.start_line,
+            end_line=fact.source_range.end_line,
+        )
+        for fact in extraction.facts
+    )
+    return documents
+
+
 def _range_values(source_range: SourceRange) -> dict[str, int]:
     return {
         "start_byte": source_range.start_byte,
@@ -297,3 +398,9 @@ def _range_values(source_range: SourceRange) -> dict[str, int]:
         "start_column": source_range.start_column,
         "end_column": source_range.end_column,
     }
+
+
+def _mark_graph_dirty(session: Session, repository_id: str) -> None:
+    repository = session.get(RepositoryModel, repository_id)
+    if repository is not None:
+        repository.graph_dirty = True

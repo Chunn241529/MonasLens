@@ -48,6 +48,7 @@ class FactKind(StrEnum):
     DECORATOR = "decorator"
     ROUTE = "route"
     TESTS = "tests"
+    CONFIGURATION = "configuration"
 
 
 class ChunkKind(StrEnum):

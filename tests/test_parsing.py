@@ -102,7 +102,7 @@ def test_syntax_errors_are_reported_without_crashing() -> None:
 
 
 def test_route_and_test_facts_are_classified() -> None:
-    source = b"test('works', () => {});\napp.get('/items', handler);\n"
+    source = b"test('works', () => handler());\napp.get('/items', handler);\n"
 
     result = ParserRegistry().extract(
         Language.JAVASCRIPT,
@@ -114,6 +114,57 @@ def test_route_and_test_facts_are_classified() -> None:
         FactKind.TESTS,
         FactKind.ROUTE,
     }
+    test_symbol = next(symbol for symbol in result.symbols if symbol.kind is SymbolKind.TEST)
+    nested_calls = [
+        fact
+        for fact in result.facts
+        if fact.kind is FactKind.CALL and fact.target_text == "handler"
+    ]
+    assert test_symbol.name == "works"
+    assert all(fact.source_symbol_id == test_symbol.id for fact in nested_calls)
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected_keys"),
+    [
+        (
+            Language.PYTHON,
+            b"def load():\n    return os.getenv('API_URL')\n",
+            {"API_URL"},
+        ),
+        (
+            Language.JAVASCRIPT,
+            b"const load = () => process.env.API_URL;\n",
+            {"API_URL"},
+        ),
+        (
+            Language.TYPESCRIPT,
+            b"const load = (): string => config.get('API_URL');\n",
+            {"API_URL"},
+        ),
+        (
+            Language.TSX,
+            b"export const View = () => <div>{process.env.API_URL}</div>;\n",
+            {"API_URL"},
+        ),
+        (
+            Language.DART,
+            b"String load() => String.fromEnvironment('API_URL');\n",
+            {"API_URL"},
+        ),
+    ],
+)
+def test_configuration_keys_are_extracted_without_values(
+    language: Language,
+    source: bytes,
+    expected_keys: set[str],
+) -> None:
+    result = ParserRegistry().extract(language, f"config.{language.value}", source)
+    configuration_facts = [fact for fact in result.facts if fact.kind is FactKind.CONFIGURATION]
+
+    assert {fact.target_text for fact in configuration_facts} == expected_keys
+    assert all(fact.metadata == {"configuration_key": True} for fact in configuration_facts)
+    assert all(fact.source_symbol_id is not None for fact in configuration_facts)
 
 
 def test_dart_method_body_facts_belong_to_method() -> None:

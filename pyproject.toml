@@ -60,12 +60,14 @@ dev = [
 
 [tool.hatch.build.targets.sdist]
 include = [
+    "/benchmarks",
     "/docs",
     "/src",
     "/tests",
     "/.env.example",
     "/LICENSE",
     "/PHASE_1_2_IMPLEMENTATION_TASKS.md",
+    "/PHASE_3_IMPLEMENTATION_TASKS.md",
     "/README.md",
 ]
 

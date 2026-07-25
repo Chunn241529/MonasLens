@@ -29,6 +29,8 @@ class RepositoryRecord(BaseModel):
     index_state: str
     last_indexed_at: datetime | None
     last_error_code: str | None
+    graph_dirty: bool
+    graph_updated_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -148,6 +150,8 @@ def _record(model: RepositoryModel) -> RepositoryRecord:
         index_state=model.index_state,
         last_indexed_at=model.last_indexed_at,
         last_error_code=model.last_error_code,
+        graph_dirty=model.graph_dirty,
+        graph_updated_at=model.graph_updated_at,
         created_at=model.created_at,
         updated_at=model.updated_at,
     )

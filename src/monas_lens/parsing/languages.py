@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from tree_sitter import Node
@@ -22,6 +23,20 @@ class PythonAdapter(TreeSitterAdapter):
     call_node_types = frozenset({"call"})
     inheritance_node_types = frozenset({"argument_list"})
     decorator_node_types = frozenset({"decorator"})
+    configuration_patterns = (
+        re.compile(
+            rb"(?:\bos\.)?getenv\(\s*['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]"
+        ),
+        re.compile(
+            rb"\bos\.environ(?:\.get\(\s*|\[\s*)['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]"
+        ),
+        re.compile(
+            rb"\b(?:config|settings)\.get\(\s*['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]"
+        ),
+    )
 
     def classify_symbol(
         self, node: Node, source: bytes, parent: ParentSymbol | None
@@ -94,10 +109,27 @@ class JavaScriptAdapter(TreeSitterAdapter):
     export_node_types = frozenset({"export_statement"})
     call_node_types = frozenset({"call_expression"})
     inheritance_node_types = frozenset({"class_heritage", "extends_clause", "implements_clause"})
+    configuration_patterns = (
+        re.compile(rb"\bprocess\.env\.(?P<key>[A-Za-z_][A-Za-z0-9_]{0,127})\b"),
+        re.compile(
+            rb"\bprocess\.env\[\s*['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]\s*\]"
+        ),
+        re.compile(
+            rb"\b(?:config|settings|Deno\.env)\.get\(\s*['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]"
+        ),
+    )
 
     def classify_symbol(
         self, node: Node, source: bytes, parent: ParentSymbol | None
     ) -> SymbolKind | None:
+        if node.type == "call_expression" and _javascript_call_target(node, source) in {
+            "it",
+            "test",
+            "specify",
+        }:
+            return SymbolKind.TEST
         if node.type in {"class_declaration", "class"}:
             return SymbolKind.CLASS
         if node.type in {
@@ -124,6 +156,19 @@ class JavaScriptAdapter(TreeSitterAdapter):
             ):
                 return SymbolKind.CONSTANT
         return None
+
+    def symbol_name_node(self, node: Node, source: bytes) -> Node | None:
+        if node.type == "call_expression":
+            arguments = node.child_by_field_name("arguments")
+            if arguments is not None:
+                named = arguments.named_children
+                if named and named[0].type in {"string", "template_string"}:
+                    return named[0]
+        return super().symbol_name_node(node, source)
+
+    def symbol_name(self, node: Node, name_node: Node, source: bytes) -> str:
+        value = super().symbol_name(node, name_node, source)
+        return value.strip("'\"`") if node.type == "call_expression" else value
 
     def parameters_node(self, node: Node) -> Node | None:
         parameters = super().parameters_node(node)
@@ -204,6 +249,12 @@ class DartAdapter(TreeSitterAdapter):
         {"superclass", "interfaces", "mixins", "extension_type_implements"}
     )
     decorator_node_types = frozenset({"metadata"})
+    configuration_patterns = (
+        re.compile(
+            rb"\b(?:String|bool|int)\.fromEnvironment\(\s*['\"]"
+            rb"(?P<key>[A-Za-z_][A-Za-z0-9_.:-]{0,127})['\"]"
+        ),
+    )
 
     def classify_symbol(
         self, node: Node, source: bytes, parent: ParentSymbol | None
@@ -235,6 +286,7 @@ class DartAdapter(TreeSitterAdapter):
 
     def symbol_source_range(self, node: Node) -> SourceRange:
         if node.type in {
+            "function_signature",
             "method_signature",
             "constructor_signature",
             "factory_constructor_signature",
@@ -255,6 +307,7 @@ class DartAdapter(TreeSitterAdapter):
 
     def associated_body_node(self, node: Node) -> Node | None:
         if node.type in {
+            "function_signature",
             "method_signature",
             "constructor_signature",
             "factory_constructor_signature",
@@ -316,3 +369,8 @@ def _looks_like_route(value: str) -> bool:
     return any(
         marker in lowered for marker in (".get", ".post", ".put", ".patch", ".delete", ".route")
     ) or lowered.lstrip("@").startswith(("get(", "post(", "put(", "patch(", "delete(", "route("))
+
+
+def _javascript_call_target(node: Node, source: bytes) -> str:
+    function = node.child_by_field_name("function")
+    return node_text(function, source) if function is not None else ""

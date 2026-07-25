@@ -21,7 +21,7 @@ def test_fresh_database_upgrades_to_head(settings: Settings) -> None:
         upgrade_database(database.engine)
         current, expected = database_revision(database.engine)
 
-        assert current == expected == "0002_structural_index"
+        assert current == expected == "0004_relationship_graph"
         assert database_is_current(database.engine)
     finally:
         database.dispose()
@@ -36,18 +36,18 @@ def test_sqlite_pragmas_are_enabled(database: Database) -> None:
     assert str(journal_mode).lower() == "wal"
 
 
-def test_structural_migration_can_downgrade_and_upgrade(settings: Settings) -> None:
+def test_graph_migration_can_downgrade_and_upgrade(settings: Settings) -> None:
     ensure_runtime_directories(settings)
     database = Database(settings)
     try:
         upgrade_database(database.engine)
-        downgrade_database(database.engine, "0001_foundation")
+        downgrade_database(database.engine, "0003_search_index")
         current, _expected = database_revision(database.engine)
-        assert current == "0001_foundation"
+        assert current == "0003_search_index"
 
         upgrade_database(database.engine)
         current, expected = database_revision(database.engine)
-        assert current == expected == "0002_structural_index"
+        assert current == expected == "0004_relationship_graph"
     finally:
         database.dispose()
 

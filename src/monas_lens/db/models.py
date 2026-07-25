@@ -32,6 +32,7 @@ class IndexState(StrEnum):
     PENDING = "pending"
     SCANNING = "scanning"
     PARSING = "parsing"
+    BUILDING_GRAPH = "building_graph"
     READY = "ready"
     FAILED = "failed"
 
@@ -57,6 +58,8 @@ class RepositoryModel(Base):
     )
     last_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(64))
+    graph_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    graph_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -211,3 +214,83 @@ class SyntaxFactModel(Base):
     start_column: Mapped[int] = mapped_column(Integer, nullable=False)
     end_column: Mapped[int] = mapped_column(Integer, nullable=False)
     metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+
+
+class SearchDocumentModel(Base):
+    __tablename__ = "search_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_type",
+            "entity_id",
+            name="ux_search_documents_entity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_id: Mapped[str] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    entity_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    language: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    qualified_name: Mapped[str | None] = mapped_column(Text)
+    signature: Mapped[str | None] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    start_line: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class RelationshipModel(Base):
+    __tablename__ = "relationships"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fact_id: Mapped[str] = mapped_column(
+        ForeignKey("syntax_facts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_file_id: Mapped[str] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_symbol_id: Mapped[str | None] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True
+    )
+    target_file_id: Mapped[str] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_symbol_id: Mapped[str | None] = mapped_column(
+        ForeignKey("symbols.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    resolution_strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_target: Mapped[str] = mapped_column(String(500), nullable=False)
+    normalized_target: Mapped[str] = mapped_column(String(500), nullable=False)
+    metadata_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+
+
+class ResolutionDiagnosticModel(Base):
+    __tablename__ = "resolution_diagnostics"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(
+        ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    file_id: Mapped[str] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    fact_id: Mapped[str] = mapped_column(
+        ForeignKey("syntax_facts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    fact_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    raw_target: Mapped[str] = mapped_column(String(500), nullable=False)
+    normalized_target: Mapped[str] = mapped_column(String(500), nullable=False)
+    details_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
