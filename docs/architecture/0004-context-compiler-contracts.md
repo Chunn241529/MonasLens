@@ -26,9 +26,21 @@ ranking separate from confidence and expose degraded results rather than guessin
 - Give every worker an independent database session. Merge only after collection, then sort and
   deduplicate by stable identities so completion order cannot affect output.
 - Preserve roadmap evidence weights for exact symbol, graph, lexical, test, and semantic signals.
-  Semantic evidence remains disabled and zero in Phase 4; enabled weights are normalized.
+  Semantic evidence remains disabled and zero in Phase 4; enabled weights are normalized over
+  `0.90`. Direct graph/test evidence keeps its full source confidence and depth-two evidence uses
+  a `0.50` decay. Explicit user focus closes at most `0.05` of remaining score headroom and is a
+  stable tie-break; inferred focus receives no boost.
 - Keep candidate rank and request confidence as separate values. Confidence below `0.80` permits
   one bounded widening pass and then returns an explicit degraded result if uncertainty remains.
+- Version confidence formula `1.0` with component weights `0.40` primary-target certainty, `0.25`
+  independent evidence-family agreement, `0.20` leading-target separation, and `0.15`
+  task-relevant role coverage. Version the primary certainty table separately, treat candidates
+  within `0.05` score as ambiguous unless explicit focus distinguishes the leader, and require a
+  `0.20` margin for full separation. Unavailable optional channels subtract `0.05`; truncated Git
+  context subtracts `0.025`.
+- On low confidence, widen only unresolved primary seeds and missing task roles at graph depth two.
+  Filter identities already returned, preserve repository and candidate caps, rerank once, and do
+  not loop or guess if the final result remains degraded.
 - Materialize source from indexed chunks, deduplicate by content hash, and allocate role-capped
   snippets under an explicitly estimated token budget.
 - Identify the estimator and mark the dependency-free default as inexact. Reserve configurable

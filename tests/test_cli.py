@@ -210,3 +210,61 @@ def test_graph_command_rejects_unknown_relation_filter(tmp_path: Path) -> None:
     assert json.loads(invalid_direction.stderr)["error"]["code"] == "graph_query_invalid"
     assert invalid_depth.exit_code == 2
     assert json.loads(invalid_depth.stderr)["error"]["code"] == "graph_query_invalid"
+
+
+def test_context_resolve_command_returns_json_and_human_summary(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "service.py").write_text(
+        "def run_service() -> str:\n    return 'ok'\n",
+        encoding="utf-8",
+    )
+    environment = {"MONAS_LENS_DATA_DIR": str(state_dir)}
+
+    assert runner.invoke(app, ["init"], env=environment).exit_code == 0
+    assert runner.invoke(app, ["repo", "add", str(repository)], env=environment).exit_code == 0
+    assert runner.invoke(app, ["index", "build"], env=environment).exit_code == 0
+
+    json_result = runner.invoke(
+        app,
+        [
+            "context",
+            "resolve",
+            "Explain run_service",
+            "--no-git-diff",
+            "--max-tokens",
+            "2000",
+            "--json",
+        ],
+        env=environment,
+    )
+    human_result = runner.invoke(
+        app,
+        ["context", "resolve", "Explain run_service", "--no-git-diff"],
+        env=environment,
+    )
+
+    assert json_result.exit_code == 0
+    payload = json.loads(json_result.stdout)
+    assert payload["schema_version"] == "1.0"
+    assert payload["primary_targets"][0]["candidate"]["qualified_name"] == "run_service"
+    assert payload["budget"]["requested_tokens"] == 2_000
+    assert human_result.exit_code == 0
+    assert "Context confidence:" in human_result.stdout
+    assert "Primary targets:" in human_result.stdout
+
+
+def test_context_resolve_command_maps_invalid_request_to_stable_error(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    environment = {"MONAS_LENS_DATA_DIR": str(state_dir)}
+    assert runner.invoke(app, ["init"], env=environment).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["context", "resolve", "...", "--json"],
+        env=environment,
+    )
+
+    assert result.exit_code == 2
+    assert json.loads(result.stderr)["error"]["code"] == "context_request_invalid"

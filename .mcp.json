@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "monas-lens": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${CLAUDE_PROJECT_DIR:-.}",
+        "monas-lens",
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

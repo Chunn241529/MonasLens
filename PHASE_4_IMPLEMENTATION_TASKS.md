@@ -1,6 +1,6 @@
 # Monas Lens — Phase 4 Context Compiler Backlog
 
-Status: Approved; P4-01 delivered in the current working tree
+Status: Delivered; P4-01 through P4-09 complete in the current working tree
 Source: `Monas_Lens_Full_Plan_v2.md`
 Baseline: Phase 3 delivered in the current working tree
 
@@ -265,7 +265,7 @@ Exit criteria:
 
 ### P4-02 — Implement the deterministic Task Resolver
 
-Status: Ready
+Status: Delivered in the current working tree
 Dependencies: P4-01
 
 Deliverables:
@@ -286,7 +286,7 @@ Exit criteria:
 
 ### P4-03 — Add bounded two-stage parallel retrieval
 
-Status: Blocked by P4-02
+Status: Delivered in the current working tree
 Dependencies: P4-01, P4-02
 
 Deliverables:
@@ -309,7 +309,7 @@ Exit criteria:
 
 ### P4-04 — Rank and deduplicate candidates
 
-Status: Blocked by P4-03
+Status: Delivered in the current working tree
 Dependencies: P4-01, P4-03
 
 Deliverables:
@@ -332,7 +332,7 @@ Exit criteria:
 
 ### P4-05 — Implement the Confidence Gate
 
-Status: Blocked by P4-03 and P4-04
+Status: Delivered in the current working tree
 Dependencies: P4-03, P4-04
 
 Deliverables:
@@ -352,7 +352,7 @@ Exit criteria:
 
 ### P4-06 — Add token estimation and budget allocation
 
-Status: Ready
+Status: Delivered in the current working tree
 Dependencies: P4-01
 
 Deliverables:
@@ -373,7 +373,7 @@ Exit criteria:
 
 ### P4-07 — Build focused Context Bundles
 
-Status: Blocked by P4-04 and P4-06
+Status: Delivered in the current working tree
 Dependencies: P4-03, P4-04, P4-06
 
 Deliverables:
@@ -397,7 +397,7 @@ Exit criteria:
 
 ### P4-08 — Orchestrate and expose the Context Compiler
 
-Status: Blocked by P4-02 through P4-07
+Status: Delivered in the current working tree
 Dependencies: P4-02, P4-03, P4-04, P4-05, P4-06, P4-07
 
 Deliverables:
@@ -419,7 +419,7 @@ Exit criteria:
 
 ### P4-09 — Close the Phase 4 release gate
 
-Status: Blocked by P4-01 through P4-08
+Status: Delivered in the current working tree
 Dependencies: P4-01 through P4-08
 
 Deliverables:
@@ -482,12 +482,11 @@ Phase 4 exit criteria:
 ## Recommended execution order
 
 ```text
-P4-01
-├── P4-02 ── P4-03 ── P4-04 ── P4-05
-└── P4-06 ─────────────────┐
-                          P4-07 ── P4-08 ── P4-09
+P4-01 ✅
+├── P4-02 ✅ ── P4-03 ✅ ── P4-04 ✅ ── P4-05 ✅
+└── P4-06 ✅ ─────────────────┐
+                          P4-07 ✅ ── P4-08 ✅ ── P4-09 ✅
 ```
 
-`P4-01` is complete. `P4-02` and `P4-06` are ready and may proceed independently; all remaining
-tasks follow their declared dependencies. Do not start semantic retrieval or MCP work inside
-Phase 4.
+`P4-01` through `P4-09` are complete. Phase 5 wraps the stable Python service without changing
+Phase 4 bundle contracts. Semantic retrieval remains deferred.

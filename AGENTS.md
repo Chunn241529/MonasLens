@@ -15,6 +15,8 @@ uv sync --locked --all-groups
 # Run the CLI locally
 uv run monas-lens --help
 uv run python -m monas_lens --help
+uv run monas-lens context resolve "Explain ContextCompiler.resolve" --no-git-diff --json
+uv run monas-lens mcp
 
 # Quality checks (mirrors CI exactly)
 uv run ruff format --check .    # formatting
@@ -65,6 +67,18 @@ Repository on disk
 | `graph/service.py` | `GraphService` — cycle-safe BFS traversal for `neighbors` and `traverse` queries |
 | `search/service.py` | `SearchService` — exact symbol name match + FTS5 lexical search with BM25 ranking |
 | `retrieval/contracts.py` | Phase 4 context compilation contracts (TaskContextRequest, ContextBundle, etc.) |
+| `retrieval/resolver.py` | `resolve_task()` — deterministic task parsing, action classification, query planning |
+| `retrieval/retriever.py` | `ParallelRetriever` — bounded concurrent lexical/graph retrieval and targeted widening |
+| `retrieval/ranker.py` | Deterministic evidence scoring, identity deduplication, and stable candidate ranking |
+| `retrieval/confidence.py` | Versioned confidence scoring, missing-role detection, and one-pass widening gate |
+| `retrieval/token_estimator.py` | `HeuristicTokenEstimator` — dependency-free token estimation, budget allocation, cropping |
+| `retrieval/bundle.py` | `ContextBundleBuilder` — indexed-chunk materialization, content deduplication, role-aware budget selection, and deterministic bundle assembly |
+| `retrieval/compiler.py` | `ContextCompiler` — Phase 4 orchestration entry point: resolve, retrieve, confidence/widen, materialize, budget, bundle |
+| `retrieval/validation.py` | Conservative manifest-based validation suggestions represented as display-only argument arrays |
+| `mcp/server.py` | FastMCP stdio transport exposing the four read-only Community tools |
+| `mcp/service.py` | Transport-independent MCP tool facade over the Context Compiler, impact analyzer, and output compressor |
+| `mcp/impact.py` | Bounded current-diff impact analysis over indexed symbols and relationships |
+| `mcp/compression.py` | Deterministic bounded command-output compression preserving failures and summaries |
 | `db/session.py` | `Database` — owns SQLAlchemy engine, short-lived sessions, SQLite WAL mode + foreign keys |
 | `db/migration.py` | Programmatic Alembic migrations (no `alembic` CLI needed) |
 | `db/models.py` | SQLAlchemy models: `RepositoryModel`, `FileModel`, `SymbolModel`, `ChunkModel`, `SyntaxFactModel`, `SearchDocumentModel`, `RelationshipModel`, `ResolutionDiagnosticModel`, `IndexRunModel` |
@@ -162,3 +176,10 @@ All primary keys use `stable_id(*parts)` from `indexing/identity.py` — determi
 13. **Repository identifier flexibility**: Most commands accept either a repository UUID or a filesystem path as the `identifier` argument. The `_find()` method tries UUID first, then canonical path resolution.
 
 14. **Alembic runs programmatically**: Don't invoke `alembic` CLI. Use `upgrade_database(engine)` / `downgrade_database(engine, revision)` from `db/migration.py`.
+
+15. **MCP stdio owns stdout**: `monas-lens mcp` must write only protocol messages to stdout. Logs
+    and startup failures belong on stderr; repository-backed tools use short-lived database
+    lifecycles.
+
+16. **MCP SDK major pin**: Keep `mcp>=1.27,<2` until a dedicated v2 migration is approved and
+    validated. Do not relax the upper bound during routine dependency updates.

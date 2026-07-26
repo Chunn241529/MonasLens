@@ -8,9 +8,10 @@ machine.
 
 ## Project status
 
-Monas Lens Community is in pre-alpha development. Phases 1–3 provide the local application
-foundation, incremental structural index, deterministic FTS5 search, and a conservative
-repository relationship graph. MCP integration and Pro features are not available yet.
+Monas Lens Community is in pre-alpha development. Phases 1–4 provide the local application
+foundation, incremental structural index, deterministic FTS5 search, conservative relationship
+graph, and task-aware Context Compiler. The Phase 5 internal MCP baseline is available over stdio;
+Pro features are not available.
 
 ## Requirements
 
@@ -35,6 +36,8 @@ uv run monas-lens index status
 uv run monas-lens search normalize_value
 uv run monas-lens graph neighbors normalize_value
 uv run monas-lens graph traverse normalize_value --depth 2 --relations calls,tested_by
+uv run monas-lens context resolve "Explain GraphService.neighbors" --no-git-diff
+uv run monas-lens mcp
 ```
 
 Every command that returns data supports `--json` for machine-readable output.
@@ -51,7 +54,7 @@ uv build
 
 ## Product scope
 
-The Community edition will provide:
+The Community edition provides:
 
 - a local repository scanner;
 - Tree-sitter structural extraction;
@@ -76,9 +79,25 @@ hop or `graph traverse` for bounded breadth-first traversal. Both support `--dir
 Files are hashed with SHA-256. Unchanged files are not reparsed, changed files are replaced
 atomically, deleted files are removed, and a failed parse preserves the last known-good records.
 
-See [the Phase 1–2 implementation backlog](PHASE_1_2_IMPLEMENTATION_TASKS.md) for the active
-structural-index plan and [the Phase 3 backlog](PHASE_3_IMPLEMENTATION_TASKS.md) for search and
-graph work.
+The Context Compiler is available through `monas-lens context resolve`. It returns deterministic
+JSON with ranked primary targets, bounded relationship context, confidence evidence, estimated
+token accounting, relevant Git hunks, and display-only validation argument arrays.
+
+The internal MCP server exposes four read-only tools over stdio:
+
+- `resolve_task_context` (mandatory first discovery call);
+- `expand_context` (one explicit missing relationship, returning only new content hashes);
+- `analyze_patch_impact` (bounded current-diff structural impact); and
+- `compress_command_output` (bounded test/build/compiler/linter/diff summaries).
+
+See [Phase 5 internal setup](docs/PHASE_5_INTERNAL_SETUP.md) for Codex and Claude Code
+configuration. MCP clients must start the server as a subprocess; do not run it behind FastAPI or
+expose a network port.
+
+See [the Phase 1–2 implementation backlog](PHASE_1_2_IMPLEMENTATION_TASKS.md),
+[the Phase 3 backlog](PHASE_3_IMPLEMENTATION_TASKS.md),
+[the Phase 4 backlog](PHASE_4_IMPLEMENTATION_TASKS.md), and
+[the Phase 5 backlog](PHASE_5_IMPLEMENTATION_TASKS.md).
 
 For the latest implementation state, validation evidence, and next-session starting point, see
 the [session handoff](docs/SESSION_HANDOFF.md).
@@ -100,8 +119,10 @@ indexes, prompts, diffs, test output, or agent conversations.
 - Graph resolution covers deterministic imports, basic calls, inheritance, implementation,
   test-source, and supported configuration-key links; dynamic dispatch and whole-program call
   analysis are intentionally out of scope.
-- Embeddings, hybrid retrieval ranking, task-oriented context bundles, and MCP are not
-  implemented.
+- MCP currently supports local stdio only; no remote HTTP transport, OAuth, or background daemon.
+- Patch impact is bounded to the current Git diff and conservative indexed relationships.
+- Embeddings, semantic/hybrid retrieval ranking, persistent discovery-call state, and Pro features
+  are not implemented.
 
 ## License
 

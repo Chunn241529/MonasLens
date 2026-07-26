@@ -32,6 +32,8 @@ from monas_lens.indexing.service import IndexService, IndexStatus, IndexSummary
 from monas_lens.logging_config import configure_logging, operation_context
 from monas_lens.parsing.registry import ParserRegistry
 from monas_lens.repositories import RepositoryRecord, RepositoryService
+from monas_lens.retrieval.compiler import ContextCompiler
+from monas_lens.retrieval.contracts import CandidateRole, ContextBundle, DiagnosticSeverity
 from monas_lens.search.service import SearchResponse, SearchService
 
 app = typer.Typer(
@@ -42,9 +44,11 @@ app = typer.Typer(
 repo_app = typer.Typer(help="Register and select local repositories.")
 index_app = typer.Typer(help="Build and inspect the structural repository index.")
 graph_app = typer.Typer(help="Query resolved repository relationships.")
+context_app = typer.Typer(help="Compile focused repository context for a coding task.")
 app.add_typer(repo_app, name="repo")
 app.add_typer(index_app, name="index")
 app.add_typer(graph_app, name="graph")
+app.add_typer(context_app, name="context")
 
 _EXIT_CODES = {
     ErrorCode.CONFIGURATION_INVALID: 2,
@@ -54,6 +58,9 @@ _EXIT_CODES = {
     ErrorCode.REPOSITORY_LOCKED: 4,
     ErrorCode.GRAPH_QUERY_INVALID: 2,
     ErrorCode.SEARCH_QUERY_INVALID: 2,
+    ErrorCode.CONTEXT_REQUEST_INVALID: 2,
+    ErrorCode.CONTEXT_BUDGET_INVALID: 2,
+    ErrorCode.CONTEXT_RETRIEVAL_FAILED: 7,
     ErrorCode.DATABASE_NOT_INITIALIZED: 5,
     ErrorCode.DATABASE_UNAVAILABLE: 5,
     ErrorCode.PARSER_UNAVAILABLE: 6,
@@ -147,6 +154,15 @@ def doctor(
         )
         if not ready:
             raise typer.Exit(code=5)
+
+
+@app.command("mcp")
+def mcp_server() -> None:
+    """Run the local Community MCP server over stdio."""
+
+    from monas_lens.mcp.server import run_stdio_server
+
+    run_stdio_server()
 
 
 @repo_app.command("add")
@@ -458,6 +474,55 @@ def graph_traverse(
         _emit_graph_response(response, json_output)
 
 
+@context_app.command("resolve")
+def context_resolve(
+    context: typer.Context,
+    task: Annotated[str, typer.Argument(help="Coding task to resolve into repository context.")],
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    focus_targets: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--focus",
+            help="Explicit file or symbol focus; repeat for multiple targets.",
+        ),
+    ] = None,
+    max_tokens: Annotated[
+        int | None,
+        typer.Option("--max-tokens", help="Maximum estimated context-token budget."),
+    ] = None,
+    include_git_diff: Annotated[
+        bool,
+        typer.Option(
+            "--git-diff/--no-git-diff",
+            help="Include bounded relevant working-tree diff hunks.",
+        ),
+    ] = True,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Compile a deterministic, task-focused context bundle."""
+    with _command_errors(context, json_output):
+        with _context_compiler(context) as compiler:
+            bundle = compiler.resolve(
+                {
+                    "task": task,
+                    "repository": identifier,
+                    "focus_targets": tuple(focus_targets or ()),
+                    "max_tokens": max_tokens,
+                    "include_git_diff": include_git_diff,
+                }
+            )
+        _emit_context_bundle(bundle, json_output)
+
+
 def _load_runtime_settings(context: typer.Context) -> Settings:
     settings = load_settings()
     configure_logging(settings, debug=bool(context.obj.get("debug", False)))
@@ -506,6 +571,12 @@ def _search_service(context: typer.Context) -> Generator[SearchService]:
 def _graph_service(context: typer.Context) -> Generator[GraphService]:
     with _ready_database(context) as (database, settings):
         yield GraphService(database, settings)
+
+
+@contextmanager
+def _context_compiler(context: typer.Context) -> Generator[ContextCompiler]:
+    with _ready_database(context) as (database, settings):
+        yield ContextCompiler(database, settings)
 
 
 @contextmanager
@@ -621,6 +692,55 @@ def _emit_graph_response(response: GraphResponse, json_output: bool) -> None:
     )
     _emit(
         response.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=human_message,
+    )
+
+
+def _emit_context_bundle(bundle: ContextBundle, json_output: bool) -> None:
+    role_counts = {
+        role: sum(snippet.role is role for snippet in bundle.snippets) for role in CandidateRole
+    }
+    included_roles = (
+        ", ".join(
+            f"{role.value}={role_counts[role]}" for role in CandidateRole if role_counts[role]
+        )
+        or "none"
+    )
+    primary_lines: list[str] = []
+    for target in bundle.primary_targets:
+        label = target.candidate.qualified_name or target.candidate.name or target.candidate.kind
+        primary_lines.append(
+            f"- {label} ({target.candidate.relative_path}:{target.candidate.start_line})"
+        )
+    if not primary_lines:
+        primary_lines.append("- none")
+    warning_codes = sorted(
+        {
+            diagnostic.code.value
+            for diagnostic in bundle.diagnostics
+            if diagnostic.severity is not DiagnosticSeverity.INFO
+        }
+    )[:5]
+    warning_line = f"Warnings: {', '.join(warning_codes)}" if warning_codes else "Warnings: none"
+    human_message = "\n".join(
+        [
+            (
+                f"Context confidence: {bundle.confidence.final_confidence:.3f} "
+                f"({bundle.confidence.status.value})"
+            ),
+            (
+                f"Budget: {bundle.budget.used_tokens}/{bundle.budget.requested_tokens} "
+                "estimated tokens used"
+            ),
+            "Primary targets:",
+            *primary_lines,
+            f"Included roles: {included_roles}",
+            warning_line,
+        ]
+    )
+    _emit(
+        bundle.model_dump(mode="json"),
         json_output=json_output,
         human_message=human_message,
     )

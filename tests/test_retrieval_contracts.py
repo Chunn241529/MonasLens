@@ -40,6 +40,7 @@ def test_context_settings_defaults_and_bounds(tmp_path: Path) -> None:
 
     assert settings.context_max_task_chars == 4_000
     assert settings.context_max_focus_targets == 10
+    assert settings.context_max_retrieval_diagnostics == 32
     assert settings.context_max_primary_targets == 3
     assert settings.context_max_dependency_snippets == 6
     assert settings.context_max_caller_snippets == 6
@@ -50,6 +51,8 @@ def test_context_settings_defaults_and_bounds(tmp_path: Path) -> None:
     assert settings.context_max_internal_expansions == 1
     assert settings.context_initial_graph_depth == 1
     assert settings.context_expanded_graph_depth == 2
+    assert settings.context_git_diff_timeout_seconds == 3.0
+    assert settings.context_git_diff_max_bytes == 262_144
 
     with pytest.raises(ValidationError):
         Settings(data_dir=tmp_path / "state", context_confidence_threshold=1.01)
@@ -57,6 +60,12 @@ def test_context_settings_defaults_and_bounds(tmp_path: Path) -> None:
         Settings(data_dir=tmp_path / "state", context_max_internal_expansions=2)
     with pytest.raises(ValidationError):
         Settings(data_dir=tmp_path / "state", context_expanded_graph_depth=3)
+    with pytest.raises(ValidationError):
+        Settings(data_dir=tmp_path / "state", context_max_retrieval_diagnostics=0)
+    with pytest.raises(ValidationError):
+        Settings(data_dir=tmp_path / "state", context_git_diff_timeout_seconds=0)
+    with pytest.raises(ValidationError):
+        Settings(data_dir=tmp_path / "state", context_git_diff_max_bytes=1_023)
 
 
 def test_request_parser_normalizes_input_and_applies_budget_default() -> None:

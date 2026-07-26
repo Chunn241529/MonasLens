@@ -52,6 +52,7 @@ class Settings(BaseModel):
     context_max_retrieval_queries: int = Field(default=12, ge=1, le=100)
     context_parallel_workers: int = Field(default=4, ge=1, le=32)
     context_max_candidates: int = Field(default=200, ge=10, le=5_000)
+    context_max_retrieval_diagnostics: int = Field(default=32, ge=1, le=100)
     context_max_primary_targets: int = Field(default=3, ge=1, le=10)
     context_max_dependency_snippets: int = Field(default=6, ge=0, le=100)
     context_max_caller_snippets: int = Field(default=6, ge=0, le=100)
@@ -64,6 +65,8 @@ class Settings(BaseModel):
     context_expanded_graph_depth: int = Field(default=2, ge=2, le=2)
     context_token_safety_margin: float = Field(default=0.10, ge=0, le=0.50)
     context_response_envelope_tokens: int = Field(default=256, ge=0, le=4_096)
+    context_git_diff_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30)
+    context_git_diff_max_bytes: int = Field(default=262_144, ge=1_024, le=10_000_000)
 
     @model_validator(mode="after")
     def normalize_paths(self) -> Self:

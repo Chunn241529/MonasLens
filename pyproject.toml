@@ -31,6 +31,7 @@ dependencies = [
     "alembic>=1.16,<2",
     "fastapi>=0.116,<1",
     "filelock>=3.18,<4",
+    "mcp>=1.27,<2",
     "pathspec>=0.12,<1",
     "platformdirs>=4.3,<5",
     "pydantic>=2.11,<3",
@@ -65,9 +66,12 @@ include = [
     "/src",
     "/tests",
     "/.env.example",
+    "/.mcp.json",
     "/LICENSE",
     "/PHASE_1_2_IMPLEMENTATION_TASKS.md",
     "/PHASE_3_IMPLEMENTATION_TASKS.md",
+    "/PHASE_4_IMPLEMENTATION_TASKS.md",
+    "/PHASE_5_IMPLEMENTATION_TASKS.md",
     "/README.md",
 ]
 
