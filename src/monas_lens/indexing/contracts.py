@@ -22,6 +22,7 @@ class Language(StrEnum):
     TYPESCRIPT = "typescript"
     TSX = "tsx"
     DART = "dart"
+    GO = "go"
 
 
 class SymbolKind(StrEnum):

@@ -31,6 +31,7 @@ _LANGUAGE_BY_EXTENSION = {
     ".cts": Language.TYPESCRIPT,
     ".tsx": Language.TSX,
     ".dart": Language.DART,
+    ".go": Language.GO,
 }
 
 _EXCLUDED_DIRECTORIES = frozenset(

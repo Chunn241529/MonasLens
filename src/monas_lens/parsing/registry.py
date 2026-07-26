@@ -13,6 +13,7 @@ from monas_lens.indexing.contracts import ExtractionResult, Language
 from monas_lens.parsing.base import TreeSitterAdapter
 from monas_lens.parsing.languages import (
     DartAdapter,
+    GoAdapter,
     JavaScriptAdapter,
     PythonAdapter,
     TsxAdapter,
@@ -25,6 +26,7 @@ _ADAPTERS: dict[Language, type[TreeSitterAdapter]] = {
     Language.TYPESCRIPT: TypeScriptAdapter,
     Language.TSX: TsxAdapter,
     Language.DART: DartAdapter,
+    Language.GO: GoAdapter,
 }
 
 

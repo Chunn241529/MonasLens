@@ -364,6 +364,90 @@ class DartAdapter(TreeSitterAdapter):
         return super().fact_kind(node, source)
 
 
+class GoAdapter(TreeSitterAdapter):
+    language = Language.GO
+    parser_name = "go"
+    import_node_types = frozenset({"import_declaration"})
+    call_node_types = frozenset({"call_expression"})
+    inheritance_node_types = frozenset()
+
+    def classify_symbol(
+        self, node: Node, source: bytes, parent: ParentSymbol | None
+    ) -> SymbolKind | None:
+        if node.type == "type_declaration":
+            spec = node.child_by_field_name("type")
+            if spec is not None and spec.type == "interface_type":
+                return SymbolKind.INTERFACE
+            return SymbolKind.CLASS
+        if node.type == "function_declaration":
+            return SymbolKind.FUNCTION
+        if node.type == "method_declaration":
+            return SymbolKind.METHOD
+        if node.type in {"const_declaration", "var_declaration"}:
+            return SymbolKind.CONSTANT
+        return None
+
+    def symbol_name_node(self, node: Node, source: bytes) -> Node | None:
+        if node.type == "type_declaration":
+            type_spec = next(
+                (c for c in node.named_children if c.type == "type_spec"),
+                None,
+            )
+            if type_spec is not None:
+                return type_spec.child_by_field_name("name")
+        if node.type in {"const_declaration", "var_declaration"}:
+            spec = node.named_children[0] if node.named_children else None
+            if spec is not None:
+                return spec.child_by_field_name("name")
+        return node.child_by_field_name("name")
+
+    def parameters_node(self, node: Node) -> Node | None:
+        return node.child_by_field_name("parameters")
+
+    def return_type_node(self, node: Node) -> Node | None:
+        result = node.child_by_field_name("result")
+        if result is not None:
+            return result
+        params = node.child_by_field_name("parameters")
+        if params is not None:
+            for child in node.named_children:
+                if child.start_byte > params.end_byte:
+                    return child
+        return None
+
+    def docstring(self, node: Node, source: bytes) -> str | None:
+        prev = node.prev_named_sibling
+        if prev is not None and prev.type == "comment":
+            return node_text(prev, source).strip()
+        return None
+
+    def fact_kind(self, node: Node, source: bytes) -> FactKind | None:
+        if node.type == "call_expression":
+            function = node.child_by_field_name("function")
+            target = node_text(function, source) if function is not None else ""
+            if target in {"t.Run", "t.Errorf", "t.Fatalf", "assert", "require"}:
+                return FactKind.TESTS
+        return super().fact_kind(node, source)
+
+    def fact_target_node(self, node: Node, kind: FactKind) -> Node:
+        if kind is FactKind.IMPORT:
+            path = first_named_descendant(node, {"interpreted_string_literal"})
+            return path if path is not None else node
+        return super().fact_target_node(node, kind)
+
+    def symbol_metadata(
+        self,
+        node: Node,
+        source: bytes,
+        kind: SymbolKind,
+        name: str,
+    ) -> dict[str, Any]:
+        metadata = super().symbol_metadata(node, source, kind, name)
+        if node.type == "function_declaration" and name.startswith("Test"):
+            metadata["is_test"] = True
+        return metadata
+
+
 def _looks_like_route(value: str) -> bool:
     lowered = value.lower().strip()
     return any(
