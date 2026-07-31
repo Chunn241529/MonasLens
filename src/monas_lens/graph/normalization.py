@@ -28,15 +28,19 @@ def normalize_fact(
     raw_target = target_text.strip()
     if kind is FactKind.IMPORT:
         return _normalize_import(language, raw_target, source_path)
+    if kind is FactKind.EXPORT:
+        return _normalize_export(language, raw_target, source_path)
     if kind is FactKind.CALL:
         return _normalize_symbol_target(RelationKind.CALLS, raw_target)
     if kind is FactKind.INHERITS:
         return _normalize_type_targets(RelationKind.INHERITS, raw_target)
     if kind is FactKind.IMPLEMENTS:
         return _normalize_type_targets(RelationKind.IMPLEMENTS, raw_target)
+    if kind is FactKind.SCHEMA:
+        return _normalize_type_targets(RelationKind.USES_SCHEMA, raw_target)
     if kind is FactKind.CONFIGURATION:
         return _normalize_configuration(raw_target)
-    if kind in {FactKind.EXPORT, FactKind.DECORATOR, FactKind.ROUTE, FactKind.TESTS}:
+    if kind in {FactKind.DECORATOR, FactKind.ROUTE, FactKind.TESTS}:
         return NormalizedFact(relation_kind=None, targets=())
     return _unsupported("unsupported_fact_kind")
 
@@ -67,6 +71,55 @@ def _normalize_import(
     if not targets:
         return _unsupported("unsupported_import_syntax")
     return NormalizedFact(RelationKind.IMPORTS, _deduplicate_targets(targets))
+
+
+def _normalize_export(
+    language: Language,
+    target_text: str,
+    source_path: str,
+) -> NormalizedFact:
+    if language not in {Language.JAVASCRIPT, Language.TYPESCRIPT, Language.TSX}:
+        return NormalizedFact(relation_kind=None, targets=())
+    module_match = re.search(r"\bfrom\s+['\"]([^'\"]+)['\"]", target_text)
+    if module_match is None:
+        return NormalizedFact(relation_kind=None, targets=())
+    module = module_match.group(1)
+    if re.search(r"\bexport\s+\*", target_text):
+        return NormalizedFact(
+            RelationKind.EXPORTS,
+            (
+                _module_target(
+                    language,
+                    source_path,
+                    module,
+                    alias="*",
+                ),
+            ),
+        )
+    named = re.search(r"\{([^}]*)\}", target_text, flags=re.DOTALL)
+    if named is None:
+        return _unsupported("unsupported_export_syntax")
+    targets: list[NormalizedTarget] = []
+    for entry in _split_comma_list(named.group(1)):
+        matched = re.fullmatch(
+            r"([A-Za-z_$][A-Za-z0-9_$]*)(?:\s+as\s+([A-Za-z_$][A-Za-z0-9_$]*))?",
+            entry,
+        )
+        if matched is None:
+            continue
+        imported_name, exported_name = matched.groups()
+        targets.append(
+            _module_target(
+                language,
+                source_path,
+                module,
+                imported_name=imported_name,
+                alias=exported_name or imported_name,
+            )
+        )
+    if not targets:
+        return _unsupported("unsupported_export_syntax")
+    return NormalizedFact(RelationKind.EXPORTS, _deduplicate_targets(tuple(targets)))
 
 
 def _python_import_targets(

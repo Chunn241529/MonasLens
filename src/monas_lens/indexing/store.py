@@ -25,6 +25,7 @@ from monas_lens.indexing.contracts import (
     SourceRange,
 )
 from monas_lens.indexing.identity import stable_id
+from monas_lens.indexing.version import CURRENT_EXTRACTOR_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class StoredFile:
     relative_path: str
     observed_hash: str
     indexed_hash: str | None
+    indexed_extractor_version: int | None
     parse_status: ParseStatus
     symbol_count: int
     chunk_count: int
@@ -158,6 +160,7 @@ class StructuralStore:
             model.mtime_ns = candidate.mtime_ns
             model.observed_hash = candidate.content_hash
             model.indexed_hash = candidate.content_hash
+            model.indexed_extractor_version = CURRENT_EXTRACTOR_VERSION
             model.encoding = "utf-8"
             model.parse_status = (
                 ParseStatus.PARSED_WITH_ERRORS.value
@@ -275,6 +278,7 @@ def _stored_file(model: FileModel) -> StoredFile:
         relative_path=model.relative_path,
         observed_hash=model.observed_hash,
         indexed_hash=model.indexed_hash,
+        indexed_extractor_version=model.indexed_extractor_version,
         parse_status=ParseStatus(model.parse_status),
         symbol_count=model.symbol_count,
         chunk_count=model.chunk_count,

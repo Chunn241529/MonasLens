@@ -109,6 +109,7 @@ class FileModel(Base):
     mtime_ns: Mapped[int] = mapped_column(BigInteger, nullable=False)
     observed_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     indexed_hash: Mapped[str | None] = mapped_column(String(64))
+    indexed_extractor_version: Mapped[int | None] = mapped_column(Integer)
     encoding: Mapped[str | None] = mapped_column(String(32))
     parse_status: Mapped[str] = mapped_column(String(32), nullable=False)
     parse_error_code: Mapped[str | None] = mapped_column(String(64))

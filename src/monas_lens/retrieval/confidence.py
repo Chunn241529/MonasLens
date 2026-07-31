@@ -263,11 +263,7 @@ def assess_confidence(
 ) -> ConfidenceAssessment:
     """Calculate one deterministic confidence snapshot from ranked evidence."""
 
-    primary = tuple(
-        ranked
-        for ranked in ranked_candidates
-        if CandidateRole.PRIMARY in ranked.candidate.role_hints
-    )
+    primary = _deduplicate_logical_primary(_meaningful_primary_candidates(ranked_candidates))
     top = primary[0] if primary else None
     ambiguous = _is_ambiguous(primary)
     target_certainty = _primary_target_certainty(top, ambiguous)
@@ -381,10 +377,47 @@ def _is_ambiguous(primary: Sequence[RankedCandidate]) -> bool:
     return top.score - alternative.score <= AMBIGUITY_SCORE_MARGIN
 
 
+def _deduplicate_logical_primary(
+    primary: Sequence[RankedCandidate],
+) -> tuple[RankedCandidate, ...]:
+    selected: list[RankedCandidate] = []
+    seen: set[tuple[str, str]] = set()
+    for ranked in primary:
+        candidate = ranked.candidate
+        key = (
+            candidate.relative_path,
+            candidate.qualified_name or candidate.name or candidate.entity_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(ranked)
+    return tuple(selected)
+
+
+def _meaningful_primary_candidates(
+    ranked_candidates: Sequence[RankedCandidate],
+) -> tuple[RankedCandidate, ...]:
+    primary = tuple(
+        ranked
+        for ranked in ranked_candidates
+        if CandidateRole.PRIMARY in ranked.candidate.role_hints
+    )
+    named_code = tuple(
+        ranked
+        for ranked in primary
+        if ranked.candidate.entity_type in {EntityType.SYMBOL, EntityType.CHUNK}
+        and (ranked.candidate.qualified_name or ranked.candidate.name)
+    )
+    return named_code or primary
+
+
 def _separation(primary: Sequence[RankedCandidate]) -> float:
     if not primary:
         return 0.0
     if len(primary) == 1:
+        return 1.0
+    if primary[0].explicit_focus and not primary[1].explicit_focus:
         return 1.0
     margin = max(primary[0].score - primary[1].score, 0.0)
     return min(margin / FULL_SEPARATION_MARGIN, 1.0)

@@ -31,8 +31,24 @@ def test_exact_unique_symbol_outranks_lexical_only_candidate() -> None:
 
     assert [item.candidate.entity_id for item in ranked] == ["exact", "lexical"]
     assert ranked[0].components.exact == 1.0
-    assert ranked[0].score == pytest.approx(0.35 / ENABLED_WEIGHT_TOTAL)
+    assert ranked[0].score == pytest.approx(ranker_module.EXACT_WEIGHT / ENABLED_WEIGHT_TOTAL)
     assert ranked[1].components.lexical == 1.0
+
+
+def test_exact_symbol_outranks_graph_plus_lexical_neighbor() -> None:
+    exact = _candidate("exact", (_evidence(EvidenceKind.EXACT, score=1.0),))
+    neighbor = _candidate(
+        "neighbor",
+        (
+            _evidence(EvidenceKind.GRAPH, score=0.98, distance=1),
+            _evidence(EvidenceKind.LEXICAL, score=0.95),
+        ),
+    )
+
+    ranked = rank_candidates((neighbor, exact))
+
+    assert ranked[0].candidate.entity_id == "exact"
+    assert ranked[1].components.lexical == 0.95
 
 
 def test_direct_graph_evidence_outranks_depth_two_evidence() -> None:

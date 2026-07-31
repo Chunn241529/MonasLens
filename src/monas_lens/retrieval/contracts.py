@@ -19,7 +19,7 @@ from pydantic import (
 from monas_lens.errors import ErrorCode, MonasLensError
 from monas_lens.graph.contracts import RelationKind
 
-CONTEXT_SCHEMA_VERSION = "1.0"
+CONTEXT_SCHEMA_VERSION = "1.1"
 MIN_CONTEXT_TOKENS = 256
 MAX_CONTEXT_TOKENS = 100_000
 MAX_TASK_CHARS = 4_000
@@ -46,6 +46,7 @@ class CandidateRole(StrEnum):
     CALLER = "caller"
     DEPENDENCY = "dependency"
     INTERFACE = "interface"
+    IMPLEMENTATION = "implementation"
     SCHEMA = "schema"
     CONFIGURATION = "configuration"
     TEST = "test"
@@ -70,6 +71,29 @@ class EntityType(StrEnum):
 class ConfidenceStatus(StrEnum):
     ACCEPTED = "accepted"
     DEGRADED = "degraded"
+
+
+class FreshnessStatus(StrEnum):
+    CURRENT = "current"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class NextActionKind(StrEnum):
+    NONE = "none"
+    EXPAND = "expand"
+    REFRESH_INDEX = "refresh_index"
+    MANUAL_FALLBACK = "manual_fallback"
+
+
+class NextActionReason(StrEnum):
+    ACCEPTED = "accepted"
+    MISSING_PRIMARY = "missing_primary"
+    AMBIGUOUS_PRIMARY = "ambiguous_primary"
+    MISSING_ROLES = "missing_roles"
+    STALE_INDEX = "stale_index"
+    TRUNCATED = "truncated"
+    RETRIEVAL_UNAVAILABLE = "retrieval_unavailable"
 
 
 class ConfidenceReason(StrEnum):
@@ -343,6 +367,8 @@ class ContextSourceReference(ContractModel):
 
 class ContextSnippet(ContractModel):
     role: CandidateRole
+    roles: tuple[CandidateRole, ...] = ()
+    evidence: tuple[RetrievalEvidence, ...] = ()
     relative_path: RelativePath
     language: Annotated[str, Field(min_length=1, max_length=32)]
     kind: Annotated[str, Field(min_length=1, max_length=64)]
@@ -358,7 +384,16 @@ class ContextSnippet(ContractModel):
     @model_validator(mode="after")
     def validate_range(self) -> Self:
         _validate_line_range(self.start_line, self.end_line)
+        roles = self.roles or (self.role,)
+        if self.role not in roles:
+            raise ValueError("Primary snippet role must be present in roles.")
+        object.__setattr__(self, "roles", tuple(dict.fromkeys(roles)))
         return self
+
+
+class NextAction(ContractModel):
+    kind: NextActionKind = NextActionKind.NONE
+    reason: NextActionReason = NextActionReason.ACCEPTED
 
 
 class ValidationCommand(ContractModel):
@@ -385,7 +420,7 @@ class ValidationCommand(ContractModel):
 
 
 class ContextBundle(ContractModel):
-    schema_version: Literal["1.0"] = CONTEXT_SCHEMA_VERSION
+    schema_version: Literal["1.1"] = CONTEXT_SCHEMA_VERSION
     repository_id: Identifier
     resolution: TaskResolution
     primary_targets: Annotated[tuple[RankedCandidate, ...], Field(max_length=10)] = ()
@@ -394,8 +429,13 @@ class ContextBundle(ContractModel):
     snippets: tuple[ContextSnippet, ...]
     budget: ContextBudget
     diagnostics: tuple[RetrievalDiagnostic, ...] = ()
+    freshness: FreshnessStatus = FreshnessStatus.UNKNOWN
+    freshness_changed_paths: tuple[RelativePath, ...] = ()
     validation_commands: tuple[ValidationCommand, ...] = ()
     truncated: bool = False
+    next_action: NextAction = NextAction()
+    recommended_focus_target: str | None = None
+    recommended_missing_roles: tuple[CandidateRole, ...] = ()
 
     @model_validator(mode="after")
     def validate_bundle(self) -> Self:
@@ -410,6 +450,10 @@ class ContextBundle(ContractModel):
             self.budget.used_tokens
         ):
             raise ValueError("Snippet token estimates cannot exceed used budget tokens.")
+        if self.freshness is FreshnessStatus.STALE and not self.freshness_changed_paths:
+            raise ValueError("Stale freshness must identify at least one changed path.")
+        if self.freshness is not FreshnessStatus.STALE and self.freshness_changed_paths:
+            raise ValueError("Only stale freshness can include changed paths.")
         return self
 
 

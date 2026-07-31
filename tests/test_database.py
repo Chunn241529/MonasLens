@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from monas_lens.config import Settings, ensure_runtime_directories
 from monas_lens.db.migration import (
@@ -9,7 +9,11 @@ from monas_lens.db.migration import (
     downgrade_database,
     upgrade_database,
 )
+from monas_lens.db.models import FileModel
 from monas_lens.db.session import Database
+from monas_lens.indexing.service import IndexService
+from monas_lens.indexing.version import CURRENT_EXTRACTOR_VERSION
+from monas_lens.repositories import RepositoryService
 
 
 def test_fresh_database_upgrades_to_head(settings: Settings) -> None:
@@ -21,7 +25,7 @@ def test_fresh_database_upgrades_to_head(settings: Settings) -> None:
         upgrade_database(database.engine)
         current, expected = database_revision(database.engine)
 
-        assert current == expected == "0004_relationship_graph"
+        assert current == expected == "0005_extractor_version"
         assert database_is_current(database.engine)
     finally:
         database.dispose()
@@ -47,7 +51,44 @@ def test_graph_migration_can_downgrade_and_upgrade(settings: Settings) -> None:
 
         upgrade_database(database.engine)
         current, expected = database_revision(database.engine)
-        assert current == expected == "0004_relationship_graph"
+        assert current == expected == "0005_extractor_version"
+    finally:
+        database.dispose()
+
+
+def test_upgraded_index_reparses_old_extractor_output_once(
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    ensure_runtime_directories(settings)
+    database = Database(settings)
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    (repository_root / "service.py").write_text(
+        "def run() -> int:\n    return 1\n",
+        encoding="utf-8",
+    )
+    try:
+        upgrade_database(database.engine)
+        repository = RepositoryService(database, settings).add(repository_root)
+        service = IndexService(database, settings)
+        assert service.build(repository.id).parsed_files == 1
+
+        downgrade_database(database.engine, "0004_relationship_graph")
+        upgrade_database(database.engine)
+
+        with database.session() as session:
+            stored_version = session.scalar(select(FileModel.indexed_extractor_version))
+        assert stored_version is None
+
+        upgraded = service.build(repository.id)
+        unchanged = service.build(repository.id)
+
+        assert upgraded.parsed_files == 1
+        assert unchanged.parsed_files == 0
+        with database.session() as session:
+            stored_version = session.scalar(select(FileModel.indexed_extractor_version))
+        assert stored_version == CURRENT_EXTRACTOR_VERSION
     finally:
         database.dispose()
 

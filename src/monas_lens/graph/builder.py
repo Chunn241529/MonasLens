@@ -72,6 +72,7 @@ class _SymbolRecord:
     kind: str
     name: str
     qualified_name: str
+    parameter_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,7 @@ class _FactRecord:
     target_text: str
     source_symbol_id: str | None
     start_line: int
+    metadata: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +118,7 @@ class _GraphData:
     facts: tuple[_FactRecord, ...]
     normalized: dict[str, NormalizedFact]
     bindings: dict[str, dict[str, tuple[_ImportBinding, ...]]]
+    exports: dict[str, dict[str, tuple[_ImportBinding, ...]]]
 
 
 class GraphBuilder:
@@ -263,6 +266,7 @@ def _load_graph_data(session: Session, repository_id: str) -> _GraphData:
             kind=model.kind,
             name=model.name,
             qualified_name=model.qualified_name,
+            parameter_count=len(model.parameters_json),
         )
         for model in symbol_models
     )
@@ -292,6 +296,7 @@ def _load_graph_data(session: Session, repository_id: str) -> _GraphData:
             target_text=model.target_text,
             source_symbol_id=model.source_symbol_id,
             start_line=model.start_line,
+            metadata=model.metadata_json,
         )
         for model in fact_models
     )
@@ -313,18 +318,33 @@ def _load_graph_data(session: Session, repository_id: str) -> _GraphData:
         facts=facts,
         normalized=normalized,
         bindings={},
+        exports={},
     )
     data.bindings = _build_import_bindings(data)
+    data.exports = _build_export_bindings(data)
     return data
 
 
 def _build_import_bindings(
     data: _GraphData,
 ) -> dict[str, dict[str, tuple[_ImportBinding, ...]]]:
+    return _build_module_bindings(data, RelationKind.IMPORTS)
+
+
+def _build_export_bindings(
+    data: _GraphData,
+) -> dict[str, dict[str, tuple[_ImportBinding, ...]]]:
+    return _build_module_bindings(data, RelationKind.EXPORTS)
+
+
+def _build_module_bindings(
+    data: _GraphData,
+    relation_kind: RelationKind,
+) -> dict[str, dict[str, tuple[_ImportBinding, ...]]]:
     mutable: dict[str, dict[str, list[_ImportBinding]]] = {}
     for fact in data.facts:
         normalized = data.normalized[fact.id]
-        if normalized.relation_kind is not RelationKind.IMPORTS:
+        if normalized.relation_kind is not relation_kind:
             continue
         for target in normalized.targets:
             if target.alias is None:
@@ -400,6 +420,13 @@ def _build_results(
             )
             if tested_by is not None:
                 relationships.setdefault(tested_by.id, tested_by)
+    relationships.update(
+        _derived_override_relationships(
+            repository_id,
+            tuple(relationships.values()),
+            data,
+        )
+    )
     return relationships, diagnostics
 
 
@@ -438,7 +465,16 @@ def _resolve_configuration(
     same_file = tuple(symbol for symbol in candidates if symbol.file_id == fact.file_id)
     if same_file:
         return _symbol_resolution(same_file, "same_file_configuration", 1.0)
-    return _symbol_resolution(candidates, "repository_configuration", 0.85)
+    if candidates:
+        return _symbol_resolution(candidates, "repository_configuration", 0.85)
+    if fact.source_symbol_id is not None:
+        return _Resolution(
+            (_Endpoint(fact.file_id, fact.source_symbol_id),),
+            "configuration_usage",
+            1.0,
+            None,
+        )
+    return _Resolution((), "no_configuration_owner", 0.0, DiagnosticReason.UNRESOLVED)
 
 
 def _resolve_symbol(
@@ -453,6 +489,7 @@ def _resolve_symbol(
         in {
             RelationKind.INHERITS,
             RelationKind.IMPLEMENTS,
+            RelationKind.USES_SCHEMA,
         }
         else None
     )
@@ -460,6 +497,24 @@ def _resolve_symbol(
         data.symbols_by_id.get(fact.source_symbol_id) if fact.source_symbol_id is not None else None
     )
     tiers: list[tuple[str, float, tuple[_SymbolRecord, ...]]] = []
+
+    receiver_type = fact.metadata.get("receiver_type")
+    if isinstance(receiver_type, str) and target.qualifier is not None:
+        tiers.append(
+            (
+                "typed_receiver",
+                0.99,
+                tuple(
+                    symbol
+                    for symbol in data.symbols_by_name.get(target.value, ())
+                    if (
+                        symbol.qualified_name == f"{receiver_type}.{target.value}"
+                        or symbol.qualified_name.endswith(f".{receiver_type}.{target.value}")
+                    )
+                    and (allowed_kinds is None or symbol.kind in allowed_kinds)
+                ),
+            )
+        )
 
     if (
         target.qualifier in {"self", "this", "super"}
@@ -550,22 +605,64 @@ def _symbols_from_binding(
     bindings = data.bindings.get(source_file_id, {}).get(alias, ())
     candidates: list[_SymbolRecord] = []
     for binding in bindings:
-        for symbol in data.symbols_by_file.get(binding.target_file_id, ()):
-            if allowed_kinds is not None and symbol.kind not in allowed_kinds:
-                continue
-            if constructor:
-                expected = binding.imported_name or alias
-                if symbol.name == expected:
-                    candidates.append(symbol)
-            elif binding.imported_name is None:
-                if symbol.name == value:
-                    candidates.append(symbol)
-            elif (
-                symbol.qualified_name == f"{binding.imported_name}.{value}"
-                or symbol.qualified_name.endswith(f".{binding.imported_name}.{value}")
-            ):
-                candidates.append(symbol)
+        expected = binding.imported_name or alias
+        candidates.extend(
+            _symbols_from_file_binding(
+                data,
+                binding.target_file_id,
+                expected=expected,
+                value=value,
+                constructor=constructor,
+                member_wildcard=binding.imported_name is None,
+                allowed_kinds=allowed_kinds,
+            )
+        )
+        exported = (
+            *data.exports.get(binding.target_file_id, {}).get(expected, ()),
+            *data.exports.get(binding.target_file_id, {}).get("*", ()),
+        )
+        for reexport in exported:
+            candidates.extend(
+                _symbols_from_file_binding(
+                    data,
+                    reexport.target_file_id,
+                    expected=reexport.imported_name or expected,
+                    value=value,
+                    constructor=constructor,
+                    member_wildcard=reexport.imported_name is None,
+                    allowed_kinds=allowed_kinds,
+                )
+            )
     return tuple(dict.fromkeys(candidates))
+
+
+def _symbols_from_file_binding(
+    data: _GraphData,
+    file_id: str,
+    *,
+    expected: str,
+    value: str,
+    constructor: bool,
+    member_wildcard: bool,
+    allowed_kinds: set[str] | None,
+) -> tuple[_SymbolRecord, ...]:
+    return tuple(
+        symbol
+        for symbol in data.symbols_by_file.get(file_id, ())
+        if (allowed_kinds is None or symbol.kind in allowed_kinds)
+        and (
+            (constructor and symbol.name == expected)
+            or (not constructor and member_wildcard and symbol.name == value)
+            or (not constructor and symbol.name == value and expected == value)
+            or (
+                not constructor
+                and (
+                    symbol.qualified_name == f"{expected}.{value}"
+                    or symbol.qualified_name.endswith(f".{expected}.{value}")
+                )
+            )
+        )
+    )
 
 
 def _symbols_matching(
@@ -690,6 +787,78 @@ def _tested_by_relationship(
         raw_target=_bounded(fact.target_text),
         normalized_target=_bounded(_target_label(target)),
         metadata_json={},
+    )
+
+
+def _derived_override_relationships(
+    repository_id: str,
+    relationships: tuple[RelationshipModel, ...],
+    data: _GraphData,
+) -> dict[str, RelationshipModel]:
+    derived: dict[str, RelationshipModel] = {}
+    for parent_relationship in relationships:
+        if parent_relationship.kind not in {
+            RelationKind.INHERITS.value,
+            RelationKind.IMPLEMENTS.value,
+        }:
+            continue
+        if (
+            parent_relationship.source_symbol_id is None
+            or parent_relationship.target_symbol_id is None
+        ):
+            continue
+        child_type = data.symbols_by_id.get(parent_relationship.source_symbol_id)
+        parent_type = data.symbols_by_id.get(parent_relationship.target_symbol_id)
+        if child_type is None or parent_type is None:
+            continue
+        child_methods = _owned_methods(child_type, data)
+        parent_methods = _owned_methods(parent_type, data)
+        for child_method in child_methods:
+            matches = tuple(
+                parent_method
+                for parent_method in parent_methods
+                if parent_method.name == child_method.name
+                and parent_method.parameter_count == child_method.parameter_count
+            )
+            if len(matches) != 1:
+                continue
+            parent_method = matches[0]
+            relationship_id = _relationship_id(
+                repository_id,
+                child_method.file_id,
+                child_method.id,
+                parent_method.file_id,
+                parent_method.id,
+                RelationKind.OVERRIDES,
+            )
+            derived[relationship_id] = RelationshipModel(
+                id=relationship_id,
+                repository_id=repository_id,
+                fact_id=parent_relationship.fact_id,
+                source_file_id=child_method.file_id,
+                source_symbol_id=child_method.id,
+                target_file_id=parent_method.file_id,
+                target_symbol_id=parent_method.id,
+                kind=RelationKind.OVERRIDES.value,
+                confidence=parent_relationship.confidence,
+                resolution_strategy="resolved_parent_method_shape",
+                raw_target=_bounded(child_method.qualified_name),
+                normalized_target=_bounded(parent_method.qualified_name),
+                metadata_json={"derived_from": parent_relationship.kind},
+            )
+    return derived
+
+
+def _owned_methods(
+    owner: _SymbolRecord,
+    data: _GraphData,
+) -> tuple[_SymbolRecord, ...]:
+    return tuple(
+        symbol
+        for symbol in data.symbols_by_file.get(owner.file_id, ())
+        if symbol.kind == SymbolKind.METHOD.value
+        and "." in symbol.qualified_name
+        and symbol.qualified_name.rsplit(".", 1)[0] == owner.qualified_name
     )
 
 

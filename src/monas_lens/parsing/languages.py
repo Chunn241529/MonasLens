@@ -97,9 +97,35 @@ class PythonAdapter(TreeSitterAdapter):
             parent = node.parent
             if parent is None or parent.type != "class_definition":
                 return None
+        if node.type == "typed_parameter" and _is_python_route_parameter(node, source):
+            return FactKind.SCHEMA
         if node.type == "decorator" and _looks_like_route(node_text(node, source)):
             return FactKind.ROUTE
         return super().fact_kind(node, source)
+
+    def fact_target_node(self, node: Node, kind: FactKind) -> Node:
+        if kind is FactKind.SCHEMA:
+            declared_type = node.child_by_field_name("type")
+            return declared_type if declared_type is not None else node
+        return super().fact_target_node(node, kind)
+
+    def fact_metadata(
+        self,
+        node: Node,
+        source: bytes,
+        kind: FactKind,
+        target_text: str,
+        parent: ParentSymbol | None,
+    ) -> dict[str, Any]:
+        if kind is not FactKind.CALL:
+            return {}
+        receiver_type = _receiver_type_from_scope(
+            node,
+            source,
+            target_text,
+            scope_types={"function_definition", "lambda"},
+        )
+        return {"receiver_type": receiver_type} if receiver_type is not None else {}
 
 
 class JavaScriptAdapter(TreeSitterAdapter):
@@ -216,6 +242,30 @@ class JavaScriptAdapter(TreeSitterAdapter):
             if _looks_like_route(target):
                 return FactKind.ROUTE
         return super().fact_kind(node, source)
+
+    def fact_metadata(
+        self,
+        node: Node,
+        source: bytes,
+        kind: FactKind,
+        target_text: str,
+        parent: ParentSymbol | None,
+    ) -> dict[str, Any]:
+        if kind is not FactKind.CALL:
+            return {}
+        receiver_type = _receiver_type_from_scope(
+            node,
+            source,
+            target_text,
+            scope_types={
+                "arrow_function",
+                "function_declaration",
+                "function_expression",
+                "generator_function",
+                "method_definition",
+            },
+        )
+        return {"receiver_type": receiver_type} if receiver_type is not None else {}
 
 
 class TypeScriptAdapter(JavaScriptAdapter):
@@ -374,9 +424,9 @@ class GoAdapter(TreeSitterAdapter):
     def classify_symbol(
         self, node: Node, source: bytes, parent: ParentSymbol | None
     ) -> SymbolKind | None:
-        if node.type == "type_declaration":
-            spec = node.child_by_field_name("type")
-            if spec is not None and spec.type == "interface_type":
+        if node.type == "type_spec":
+            declared_type = node.child_by_field_name("type")
+            if declared_type is not None and declared_type.type == "interface_type":
                 return SymbolKind.INTERFACE
             return SymbolKind.CLASS
         if node.type == "function_declaration":
@@ -388,13 +438,6 @@ class GoAdapter(TreeSitterAdapter):
         return None
 
     def symbol_name_node(self, node: Node, source: bytes) -> Node | None:
-        if node.type == "type_declaration":
-            type_spec = next(
-                (c for c in node.named_children if c.type == "type_spec"),
-                None,
-            )
-            if type_spec is not None:
-                return type_spec.child_by_field_name("name")
         if node.type in {"const_declaration", "var_declaration"}:
             spec = node.named_children[0] if node.named_children else None
             if spec is not None:
@@ -458,3 +501,54 @@ def _looks_like_route(value: str) -> bool:
 def _javascript_call_target(node: Node, source: bytes) -> str:
     function = node.child_by_field_name("function")
     return node_text(function, source) if function is not None else ""
+
+
+def _is_python_route_parameter(node: Node, source: bytes) -> bool:
+    current = node.parent
+    while current is not None and current.type != "function_definition":
+        current = current.parent
+    decorated = current.parent if current is not None else None
+    if decorated is None or decorated.type != "decorated_definition":
+        return False
+    return any(
+        child.type == "decorator" and _looks_like_route(node_text(child, source))
+        for child in decorated.named_children
+    )
+
+
+def _receiver_type_from_scope(
+    node: Node,
+    source: bytes,
+    target_text: str,
+    *,
+    scope_types: set[str],
+) -> str | None:
+    identifiers = re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", target_text)
+    if len(identifiers) < 2:
+        return None
+    qualifier = identifiers[-2]
+    if qualifier in {"self", "this", "super"}:
+        return None
+
+    scope = node.parent
+    while scope is not None and scope.type not in scope_types:
+        scope = scope.parent
+    if scope is None:
+        return None
+    scope_text = node_text(scope, source)
+    escaped = re.escape(qualifier)
+    declared = re.findall(
+        rf"\b{escaped}\s*:\s*([A-Za-z_$][A-Za-z0-9_$.]*)",
+        scope_text,
+    )
+    constructed = re.findall(
+        rf"\b{escaped}\s*(?::[^=\n]+)?=\s*(?:new\s+)?"
+        r"([A-Z][A-Za-z0-9_$.]*)\s*\(",
+        scope_text,
+    )
+    receiver_types = {
+        identifiers[-1]
+        for value in (*declared, *constructed)
+        if (identifiers := re.findall(r"[A-Za-z_$][A-Za-z0-9_$]*", value))
+    }
+    return next(iter(receiver_types)) if len(receiver_types) == 1 else None

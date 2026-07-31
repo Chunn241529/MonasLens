@@ -179,6 +179,10 @@ def allocate_budget(
     # Apply role caps
     role_caps = {
         CandidateRole.PRIMARY: max_primary_targets,
+        CandidateRole.INTERFACE: max_dependency_snippets,
+        CandidateRole.IMPLEMENTATION: max_dependency_snippets,
+        CandidateRole.SCHEMA: max_dependency_snippets,
+        CandidateRole.CONFIGURATION: max_dependency_snippets,
         CandidateRole.DEPENDENCY: max_dependency_snippets,
         CandidateRole.CALLER: max_caller_snippets,
         CandidateRole.TEST: max_test_snippets,
@@ -202,6 +206,7 @@ def allocate_budget(
         for role in (
             CandidateRole.PRIMARY,
             CandidateRole.INTERFACE,
+            CandidateRole.IMPLEMENTATION,
             CandidateRole.SCHEMA,
             CandidateRole.CONFIGURATION,
             CandidateRole.DEPENDENCY,

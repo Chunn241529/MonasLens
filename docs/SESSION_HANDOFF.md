@@ -1,6 +1,6 @@
 # Bàn giao phiên phát triển Monas Lens
 
-Cập nhật lần cuối: 2026-07-26
+Cập nhật lần cuối: 2026-07-30
 
 ## Mục đích
 
@@ -38,7 +38,7 @@ git diff --check
 ### Phase 2 — Incremental structural index
 
 - Deterministic scanner with layered `.gitignore`, binary/size/generated-file filters.
-- Offline Tree-sitter for Python, JavaScript, TypeScript, TSX, and Dart.
+- Offline Tree-sitter for Python, JavaScript, TypeScript, TSX, Dart, and Go.
 - Symbols, chunks, syntax facts, stable identities, atomic incremental replacement, last-known-good
   recovery, locking, and stale-file tracking.
 
@@ -47,7 +47,7 @@ git diff --check
 - SQLite FTS5 exact/lexical search and deterministic repository-scoped results.
 - Conservative imports, calls, inheritance, implementation, test, and configuration graph.
 - Incremental graph refresh, explicit diagnostics, cycle-safe bounded queries, CLI and benchmark.
-- Reversible migration head remains `0004_relationship_graph`.
+- Reversible migration head is `0005_extractor_version`.
 
 ### Phase 4 — Context Compiler ✅
 
@@ -60,7 +60,7 @@ git diff --check
 - Seven required mixed-language scenarios, deterministic serialization, benchmark, README, and
   `docs/PHASE_4_VALIDATION.md` are present.
 
-### Phase 5 — Community MCP internal baseline ✅
+### Phase 5 — Retrieval-quality release gate ✅
 
 - Official MCP Python SDK pinned to `mcp>=1.27,<2`; lock currently resolves `mcp==1.28.1`.
 - `monas-lens mcp` runs FastMCP over local stdio only.
@@ -72,25 +72,30 @@ git diff --check
 - Context tools reuse Phase 4 service contracts and do not import CLI code.
 - Expansion filters known content hashes; patch impact is current-diff/index based and bounded;
   output compression preserves failures/summaries and reports omissions.
+- Context schema 1.1 includes multi-role snippets, relationship evidence, deterministic
+  `next_action`, focus guidance, and stale-index recovery without database mutation.
+- CLI parity is available through `context expand`, `impact analyze`, and `output compress`.
+- The 13-case, three-repetition quality benchmark passes with 100% primary and role recall, one
+  discovery call at p95, zero manual fallbacks, and 91.01% estimated token reduction.
 - Codex and Claude Code setup is documented in `docs/PHASE_5_INTERNAL_SETUP.md`; project-scoped
   Claude configuration is in `.mcp.json`.
 
 ## Validation gần nhất
 
-Full quality gate ngày 2026-07-26:
+Full quality gate ngày 2026-07-30:
 
-- Ruff format: đạt, 86 files.
+- Ruff format: đạt, 93 files.
 - Ruff lint: đạt.
 - Pyright strict: `0 errors`, `0 warnings`.
-- Pytest: `175 passed`, `1 skipped`.
-- Branch coverage: `89.56%` (yêu cầu `>=85%`).
+- Pytest: `191 passed`, `1 skipped`.
+- Branch coverage: `90.22%` (yêu cầu `>=85%`).
 - `uv lock --check`: đạt, 64 packages.
 - `uv build`: tạo thành công sdist và wheel.
-- Benchmark Phase 4 (20 vòng): median tổng `38.220 ms`, p95 `46.724 ms` trên Windows 11,
-  Python 3.12.7.
+- Benchmark Phase 5 (13 case, 3 vòng): primary top-1/top-3 và required/optional role recall đều
+  `100%`; p95 discovery calls `1`; token reduction `91.01%`; p95 retrieval `175.775 ms`.
 - Source archive không chứa `.uv-cache` và có đủ Phase 4/5 docs/backlogs.
-- Isolated wheel smoke đã init state mới, index 86 files, và resolve context với mức giảm ước tính
-  `85.23%`; official MCP SDK client smoke đã handshake/list/call tool thành công.
+- Isolated wheel smoke đã init state mới, index repository, load skill 1.2, resolve schema 1.1,
+  expand, và analyze impact; official MCP SDK client smoke đã handshake/list/call tool thành công.
 - Test symlink bị skip trên Windows do process không có quyền tạo symlink; vẫn bật trên Linux CI.
 
 ## Lệnh sử dụng nội bộ

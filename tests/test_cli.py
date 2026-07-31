@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -13,6 +14,21 @@ def test_version_option() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == "monas-lens 0.1.0.dev0"
+
+
+def test_skill_command_returns_shared_agent_guidance() -> None:
+    human = runner.invoke(app, ["skill"])
+    machine = runner.invoke(app, ["skill", "--json"])
+
+    assert human.exit_code == 0
+    assert "# Monas Lens Agent Skill" in human.stdout
+    assert "`resolve_task_context`" in human.stdout
+    assert machine.exit_code == 0
+    payload = json.loads(machine.stdout)
+    assert payload["schema_version"] == "1.0"
+    assert payload["name"] == "monas-lens"
+    assert payload["version"] == "1.2"
+    assert payload["instructions"] == human.stdout.rstrip("\n")
 
 
 def test_no_arguments_shows_help() -> None:
@@ -247,7 +263,9 @@ def test_context_resolve_command_returns_json_and_human_summary(tmp_path: Path) 
 
     assert json_result.exit_code == 0
     payload = json.loads(json_result.stdout)
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
+    assert payload["freshness"] == "unknown"
+    assert payload["freshness_changed_paths"] == []
     assert payload["primary_targets"][0]["candidate"]["qualified_name"] == "run_service"
     assert payload["budget"]["requested_tokens"] == 2_000
     assert human_result.exit_code == 0
@@ -268,3 +286,123 @@ def test_context_resolve_command_maps_invalid_request_to_stable_error(tmp_path: 
 
     assert result.exit_code == 2
     assert json.loads(result.stderr)["error"]["code"] == "context_request_invalid"
+
+
+def test_context_expand_omits_known_content_hashes(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "service.py").write_text(
+        "def run_service() -> str:\n    return 'ok'\n",
+        encoding="utf-8",
+    )
+    environment = {"MONAS_LENS_DATA_DIR": str(state_dir)}
+
+    assert runner.invoke(app, ["init"], env=environment).exit_code == 0
+    assert runner.invoke(app, ["repo", "add", str(repository)], env=environment).exit_code == 0
+    assert runner.invoke(app, ["index", "build"], env=environment).exit_code == 0
+    resolved = runner.invoke(
+        app,
+        [
+            "context",
+            "resolve",
+            "Explain run_service",
+            "--no-git-diff",
+            "--json",
+        ],
+        env=environment,
+    )
+    known_hashes = [item["content_hash"] for item in json.loads(resolved.stdout)["snippets"]]
+    arguments = [
+        "context",
+        "expand",
+        "Explain run_service",
+        "--focus",
+        "run_service",
+        "--json",
+    ]
+    for content_hash in known_hashes:
+        arguments.extend(("--known-hash", content_hash))
+
+    expanded = runner.invoke(app, arguments, env=environment)
+
+    assert expanded.exit_code == 0
+    payload = json.loads(expanded.stdout)
+    assert payload["focus_target"] == "run_service"
+    assert payload["omitted_known_snippets"] >= 1
+    assert not {snippet["content_hash"] for snippet in payload["snippets"]}.intersection(
+        known_hashes
+    )
+
+
+def test_output_compress_reads_stdin_and_validates_budget() -> None:
+    output = "\n".join(
+        ("starting", *(f"noise {index}" for index in range(100)), "FAILED expected 1 actual 2")
+    )
+
+    compressed = runner.invoke(
+        app,
+        [
+            "output",
+            "compress",
+            "-",
+            "--kind",
+            "test",
+            "--max-output-chars",
+            "256",
+            "--json",
+        ],
+        input=output,
+    )
+    invalid = runner.invoke(
+        app,
+        ["output", "compress", "-", "--max-output-chars", "12", "--json"],
+        input=output,
+    )
+
+    assert compressed.exit_code == 0
+    payload = json.loads(compressed.stdout)
+    assert payload["command_kind"] == "test"
+    assert "FAILED expected 1 actual 2" in payload["content"]
+    assert payload["truncated"] is True
+    assert invalid.exit_code == 2
+    assert json.loads(invalid.stderr)["error"]["code"] == "mcp_request_invalid"
+
+
+def test_impact_analyze_reports_current_changed_path(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source = repository / "service.py"
+    source.write_text("def run_service() -> str:\n    return 'before'\n", encoding="utf-8")
+    for command in (
+        ("git", "init", "--quiet"),
+        ("git", "config", "user.email", "cli@monas-lens.local"),
+        ("git", "config", "user.name", "Monas Lens CLI"),
+        ("git", "add", "."),
+        ("git", "commit", "--quiet", "-m", "fixture"),
+    ):
+        subprocess.run(command, cwd=repository, check=True)
+    environment = {"MONAS_LENS_DATA_DIR": str(state_dir)}
+
+    assert runner.invoke(app, ["init"], env=environment).exit_code == 0
+    assert runner.invoke(app, ["repo", "add", str(repository)], env=environment).exit_code == 0
+    assert runner.invoke(app, ["index", "build"], env=environment).exit_code == 0
+    source.write_text("def run_service() -> str:\n    return 'after'\n", encoding="utf-8")
+
+    analyzed = runner.invoke(
+        app,
+        [
+            "impact",
+            "analyze",
+            "--task",
+            "Change run_service",
+            "--expected-path",
+            "service.py",
+            "--json",
+        ],
+        env=environment,
+    )
+
+    assert analyzed.exit_code == 0
+    assert json.loads(analyzed.stdout)["changed_paths"] == ["service.py"]

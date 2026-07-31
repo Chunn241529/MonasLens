@@ -14,16 +14,23 @@ from monas_lens.repositories import RepositoryService
 from monas_lens.retrieval.contracts import (
     MIN_CONTEXT_TOKENS,
     CandidateRole,
+    ConfidenceReason,
     ConfidenceResult,
+    ConfidenceStatus,
     ContextBudget,
     ContextBundle,
     ContextSnippet,
     ContextSourceReference,
     DiagnosticSeverity,
     EntityType,
+    FreshnessStatus,
+    NextAction,
+    NextActionKind,
+    NextActionReason,
     RankedCandidate,
     RetrievalDiagnostic,
     RetrievalDiagnosticCode,
+    RetrievalEvidence,
     RoleTokenUsage,
     TaskResolution,
 )
@@ -45,17 +52,19 @@ from monas_lens.retrieval.validation import (
 _ROLE_PRIORITY = {
     CandidateRole.PRIMARY: 0,
     CandidateRole.INTERFACE: 1,
-    CandidateRole.SCHEMA: 2,
-    CandidateRole.CONFIGURATION: 3,
-    CandidateRole.DEPENDENCY: 4,
-    CandidateRole.CALLER: 5,
-    CandidateRole.TEST: 6,
-    CandidateRole.GIT_DIFF: 7,
+    CandidateRole.IMPLEMENTATION: 2,
+    CandidateRole.SCHEMA: 3,
+    CandidateRole.CONFIGURATION: 4,
+    CandidateRole.DEPENDENCY: 5,
+    CandidateRole.CALLER: 6,
+    CandidateRole.TEST: 7,
+    CandidateRole.GIT_DIFF: 8,
 }
 _ALLOCATION_STAGES = (
     (CandidateRole.PRIMARY,),
     (
         CandidateRole.INTERFACE,
+        CandidateRole.IMPLEMENTATION,
         CandidateRole.SCHEMA,
         CandidateRole.CONFIGURATION,
         CandidateRole.DEPENDENCY,
@@ -69,6 +78,8 @@ _ALLOCATION_STAGES = (
 @dataclass(frozen=True, slots=True)
 class _PreparedSnippet:
     role: CandidateRole
+    roles: tuple[CandidateRole, ...]
+    evidence: tuple[RetrievalEvidence, ...]
     relative_path: str
     language: str
     kind: str
@@ -114,6 +125,8 @@ class ContextBundleBuilder:
         requested_tokens: int,
         diagnostics: Sequence[RetrievalDiagnostic] = (),
         git_diff_hunks: Sequence[GitDiffHunk] = (),
+        freshness: FreshnessStatus = FreshnessStatus.UNKNOWN,
+        freshness_changed_paths: Sequence[str] = (),
         retrieval_truncated: bool = False,
     ) -> ContextBundle:
         """Materialize, deduplicate, budget, and assemble one deterministic bundle."""
@@ -140,20 +153,10 @@ class ContextBundleBuilder:
             settings=self._settings,
             estimator=self._estimator,
         )
-        primary_targets = tuple(
-            item
-            for item in ordered_ranked
-            if CandidateRole.PRIMARY in item.candidate.role_hints
-            and item.candidate.identity in chunks_by_identity
-        )[: self._settings.context_max_primary_targets]
-        selected_diagnostics = _bundle_diagnostics(
-            diagnostics,
-            confidence,
+        primary_targets = _select_primary_targets(
             ordered_ranked,
-            materialized,
-            selection.budget,
-            invalid_git_paths=invalid_git_paths,
-            limit=self._settings.context_max_retrieval_diagnostics,
+            materialized_identities=frozenset(chunks_by_identity),
+            limit=self._settings.context_max_primary_targets,
         )
         validation_commands = suggest_validation_commands(
             repository.canonical_path,
@@ -165,17 +168,46 @@ class ContextBundleBuilder:
             or selection.budget.cropped
             or invalid_git_paths > 0
         )
+        materialized_confidence = _post_materialization_confidence(
+            confidence,
+            ordered_ranked,
+            selection.snippets,
+            available_roles=frozenset(role for item in prepared for role in item.roles),
+        )
+        selected_diagnostics = _bundle_diagnostics(
+            diagnostics,
+            materialized_confidence,
+            ordered_ranked,
+            selection.snippets,
+            selection.budget,
+            invalid_git_paths=invalid_git_paths,
+            limit=self._settings.context_max_retrieval_diagnostics,
+        )
+        recommended_focus = _recommended_focus(ordered_ranked)
+        next_action = _select_next_action(
+            materialized_confidence,
+            selected_diagnostics,
+            truncated=truncated,
+            recommended_focus=recommended_focus,
+        )
         return ContextBundle(
             repository_id=repository_id,
             resolution=resolution,
             primary_targets=primary_targets,
-            confidence=confidence,
-            internal_widening_occurred=confidence.expansion_count > 0,
+            confidence=materialized_confidence,
+            internal_widening_occurred=materialized_confidence.expansion_count > 0,
             snippets=selection.snippets,
             budget=selection.budget,
             diagnostics=selected_diagnostics,
+            freshness=freshness,
+            freshness_changed_paths=tuple(freshness_changed_paths),
             validation_commands=validation_commands,
             truncated=truncated,
+            next_action=next_action,
+            recommended_focus_target=(
+                recommended_focus if next_action.kind is NextActionKind.EXPAND else None
+            ),
+            recommended_missing_roles=materialized_confidence.missing_roles,
         )
 
     def _validate_inputs(
@@ -210,6 +242,13 @@ def _materialize_ranked(
         selected.append(
             _PreparedSnippet(
                 role=min(candidate.role_hints, key=lambda role: _ROLE_PRIORITY[role]),
+                roles=tuple(
+                    sorted(
+                        set(candidate.role_hints),
+                        key=lambda role: (_ROLE_PRIORITY[role], role.value),
+                    )
+                ),
+                evidence=candidate.evidence,
                 relative_path=chunk.relative_path,
                 language=chunk.language,
                 kind=chunk.kind,
@@ -230,6 +269,34 @@ def _materialize_ranked(
                 focus_line=min(max(candidate.start_line, chunk.start_line), chunk.end_line),
             )
         )
+    return tuple(selected)
+
+
+def _select_primary_targets(
+    ranked_candidates: Sequence[RankedCandidate],
+    *,
+    materialized_identities: frozenset[tuple[str, EntityType, str]],
+    limit: int,
+) -> tuple[RankedCandidate, ...]:
+    selected: list[RankedCandidate] = []
+    seen: set[tuple[str, str]] = set()
+    for ranked in ranked_candidates:
+        candidate = ranked.candidate
+        if (
+            CandidateRole.PRIMARY not in candidate.role_hints
+            or candidate.identity not in materialized_identities
+        ):
+            continue
+        key = (
+            candidate.relative_path,
+            candidate.qualified_name or candidate.name or candidate.entity_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(ranked)
+        if len(selected) == limit:
+            break
     return tuple(selected)
 
 
@@ -268,6 +335,8 @@ def _materialize_relevant_git_hunks(
         prepared.append(
             _PreparedSnippet(
                 role=CandidateRole.GIT_DIFF,
+                roles=(CandidateRole.GIT_DIFF,),
+                evidence=(),
                 relative_path=relative_path,
                 language="diff",
                 kind="git_hunk",
@@ -316,6 +385,13 @@ def _deduplicate_prepared(
         selected.append(
             _PreparedSnippet(
                 role=canonical.role,
+                roles=tuple(
+                    sorted(
+                        {role for occurrence in occurrences for role in occurrence.roles},
+                        key=lambda role: (_ROLE_PRIORITY[role], role.value),
+                    )
+                ),
+                evidence=_merge_retrieval_evidence(occurrences),
                 relative_path=canonical.relative_path,
                 language=canonical.language,
                 kind=canonical.kind,
@@ -348,6 +424,7 @@ def _select_under_budget(
     caps = {
         CandidateRole.PRIMARY: settings.context_max_primary_targets,
         CandidateRole.INTERFACE: settings.context_max_dependency_snippets,
+        CandidateRole.IMPLEMENTATION: settings.context_max_dependency_snippets,
         CandidateRole.SCHEMA: settings.context_max_dependency_snippets,
         CandidateRole.CONFIGURATION: settings.context_max_dependency_snippets,
         CandidateRole.DEPENDENCY: settings.context_max_dependency_snippets,
@@ -358,26 +435,46 @@ def _select_under_budget(
     by_role: dict[CandidateRole, tuple[_PreparedSnippet, ...]] = {}
     for role in CandidateRole:
         role_items = sorted(
-            (item for item in prepared if item.role is role),
+            (item for item in prepared if role in item.roles),
             key=_prepared_sort_key,
         )
         by_role[role] = tuple(role_items[: caps[role]])
 
     selected: list[ContextSnippet] = []
+    selected_hashes: set[str] = set()
     used_tokens = 0
+
+    def select_item(item: _PreparedSnippet) -> None:
+        nonlocal used_tokens
+        if item.content_hash in selected_hashes:
+            return
+        remaining = available_tokens - used_tokens
+        if remaining <= 0:
+            return
+        candidate = _to_context_snippet(item, estimator)
+        if candidate.token_estimate.estimated_tokens > remaining:
+            cropped = _crop_to_budget(item, remaining, estimator)
+            if cropped is None:
+                return
+            candidate = _to_context_snippet(cropped, estimator)
+        selected.append(candidate)
+        selected_hashes.add(item.content_hash)
+        used_tokens += candidate.token_estimate.estimated_tokens
+
+    reservation_roles = (
+        CandidateRole.PRIMARY,
+        *(
+            role
+            for role in CandidateRole
+            if role not in {CandidateRole.PRIMARY, CandidateRole.GIT_DIFF}
+        ),
+    )
+    for role in reservation_roles:
+        if by_role[role]:
+            select_item(by_role[role][0])
     for stage in _ALLOCATION_STAGES:
         for item in _round_robin(by_role, stage):
-            remaining = available_tokens - used_tokens
-            if remaining <= 0:
-                break
-            candidate = _to_context_snippet(item, estimator)
-            if candidate.token_estimate.estimated_tokens > remaining:
-                cropped = _crop_to_budget(item, remaining, estimator)
-                if cropped is None:
-                    continue
-                candidate = _to_context_snippet(cropped, estimator)
-            selected.append(candidate)
-            used_tokens += candidate.token_estimate.estimated_tokens
+            select_item(item)
 
     pre_budget_tokens = sum(estimator.estimate(item.content).estimated_tokens for item in prepared)
     omitted_items = max(len(prepared) - len(selected), 0)
@@ -462,6 +559,8 @@ def _crop_to_budget(
     end_line = item.start_line + end - 1
     return _PreparedSnippet(
         role=item.role,
+        roles=item.roles,
+        evidence=item.evidence,
         relative_path=item.relative_path,
         language=item.language,
         kind=item.kind,
@@ -491,6 +590,8 @@ def _to_context_snippet(
 ) -> ContextSnippet:
     return ContextSnippet(
         role=item.role,
+        roles=item.roles,
+        evidence=item.evidence,
         relative_path=item.relative_path,
         language=item.language,
         kind=item.kind,
@@ -509,14 +610,14 @@ def _bundle_diagnostics(
     diagnostics: Sequence[RetrievalDiagnostic],
     confidence: ConfidenceResult,
     ranked_candidates: Sequence[RankedCandidate],
-    materialized: Sequence[_PreparedSnippet],
+    materialized: Sequence[ContextSnippet],
     budget: ContextBudget,
     *,
     invalid_git_paths: int,
     limit: int,
 ) -> tuple[RetrievalDiagnostic, ...]:
     selected = list(diagnostics)
-    materialized_roles = {item.role for item in materialized}
+    materialized_roles = {role for item in materialized for role in item.roles}
     ranked_roles = {role for ranked in ranked_candidates for role in ranked.candidate.role_hints}
     missing_roles = set(confidence.missing_roles)
     missing_roles.update(role for role in ranked_roles if role not in materialized_roles)
@@ -548,6 +649,200 @@ def _bundle_diagnostics(
         )
     unique = {_diagnostic_sort_key(item): item for item in selected}
     return tuple(unique[key] for key in sorted(unique)[:limit])
+
+
+def _post_materialization_confidence(
+    confidence: ConfidenceResult,
+    ranked_candidates: Sequence[RankedCandidate],
+    snippets: Sequence[ContextSnippet],
+    *,
+    available_roles: frozenset[CandidateRole] | None = None,
+) -> ConfidenceResult:
+    ranked_roles = {
+        role
+        for ranked in ranked_candidates
+        for role in ranked.candidate.role_hints
+        if role is not CandidateRole.PRIMARY
+    }
+    required_roles = (
+        ranked_roles if available_roles is None else set(available_roles) - {CandidateRole.PRIMARY}
+    )
+    materialized_roles = {role for snippet in snippets for role in snippet.roles}
+    missing_roles = tuple(
+        sorted(
+            required_roles - materialized_roles,
+            key=lambda role: (_ROLE_PRIORITY[role], role.value),
+        )
+    )
+    if not missing_roles:
+        blocking_reasons = {
+            ConfidenceReason.MISSING_PRIMARY,
+            ConfidenceReason.AMBIGUOUS_TARGET,
+            ConfidenceReason.LOW_SEPARATION,
+            ConfidenceReason.RETRIEVAL_DEGRADED,
+        }
+        if (
+            confidence.status is ConfidenceStatus.ACCEPTED
+            or set(confidence.reason_codes) & blocking_reasons
+        ):
+            return confidence.model_copy(update={"missing_roles": ()})
+        accepted_value = max(confidence.final_confidence, confidence.threshold)
+        final_components = confidence.final_components.model_copy(update={"role_coverage": 1.0})
+        reason_codes = tuple(
+            reason
+            for reason in confidence.reason_codes
+            if reason is not ConfidenceReason.MISSING_ROLES
+        )
+        if confidence.expansion_count == 0:
+            return ConfidenceResult(
+                initial_confidence=accepted_value,
+                final_confidence=accepted_value,
+                threshold=confidence.threshold,
+                status=ConfidenceStatus.ACCEPTED,
+                expansion_count=0,
+                initial_components=final_components,
+                final_components=final_components,
+                reason_codes=reason_codes,
+                missing_roles=(),
+            )
+        return ConfidenceResult(
+            initial_confidence=confidence.initial_confidence,
+            final_confidence=accepted_value,
+            threshold=confidence.threshold,
+            status=ConfidenceStatus.ACCEPTED,
+            expansion_count=confidence.expansion_count,
+            initial_components=confidence.initial_components,
+            final_components=final_components,
+            reason_codes=reason_codes,
+            missing_roles=(),
+        )
+
+    coverage = max(
+        (len(required_roles) - len(missing_roles)) / max(len(required_roles), 1),
+        0.0,
+    )
+    degraded_value = min(confidence.final_confidence, max(confidence.threshold - 0.01, 0.0))
+    final_components = confidence.final_components.model_copy(update={"role_coverage": coverage})
+    reason_codes = tuple(dict.fromkeys((*confidence.reason_codes, ConfidenceReason.MISSING_ROLES)))
+    if confidence.expansion_count == 0:
+        return ConfidenceResult(
+            initial_confidence=degraded_value,
+            final_confidence=degraded_value,
+            threshold=confidence.threshold,
+            status=ConfidenceStatus.DEGRADED,
+            expansion_count=0,
+            initial_components=final_components,
+            final_components=final_components,
+            reason_codes=reason_codes,
+            missing_roles=missing_roles,
+        )
+    return ConfidenceResult(
+        initial_confidence=confidence.initial_confidence,
+        final_confidence=degraded_value,
+        threshold=confidence.threshold,
+        status=ConfidenceStatus.DEGRADED,
+        expansion_count=confidence.expansion_count,
+        initial_components=confidence.initial_components,
+        final_components=final_components,
+        reason_codes=reason_codes,
+        missing_roles=missing_roles,
+    )
+
+
+def _recommended_focus(
+    ranked_candidates: Sequence[RankedCandidate],
+) -> str | None:
+    primary = tuple(
+        ranked
+        for ranked in ranked_candidates
+        if CandidateRole.PRIMARY in ranked.candidate.role_hints
+    )
+    if not primary:
+        return None
+    selected = min(primary, key=_ranked_sort_key).candidate
+    return (
+        selected.qualified_name
+        or selected.name
+        or f"{selected.relative_path}:{selected.start_line}"
+    )
+
+
+def _select_next_action(
+    confidence: ConfidenceResult,
+    diagnostics: Sequence[RetrievalDiagnostic],
+    *,
+    truncated: bool,
+    recommended_focus: str | None,
+) -> NextAction:
+    diagnostic_codes = {diagnostic.code for diagnostic in diagnostics}
+    if RetrievalDiagnosticCode.INDEX_STALE in diagnostic_codes:
+        return NextAction(
+            kind=NextActionKind.REFRESH_INDEX,
+            reason=NextActionReason.STALE_INDEX,
+        )
+    if ConfidenceReason.MISSING_PRIMARY in confidence.reason_codes:
+        return NextAction(
+            kind=NextActionKind.MANUAL_FALLBACK,
+            reason=NextActionReason.MISSING_PRIMARY,
+        )
+    if ConfidenceReason.AMBIGUOUS_TARGET in confidence.reason_codes:
+        return NextAction(
+            kind=NextActionKind.MANUAL_FALLBACK,
+            reason=NextActionReason.AMBIGUOUS_PRIMARY,
+        )
+    if confidence.missing_roles:
+        return NextAction(
+            kind=(
+                NextActionKind.EXPAND
+                if recommended_focus is not None
+                else NextActionKind.MANUAL_FALLBACK
+            ),
+            reason=NextActionReason.MISSING_ROLES,
+        )
+    if truncated and confidence.status is ConfidenceStatus.DEGRADED:
+        return NextAction(
+            kind=(
+                NextActionKind.EXPAND
+                if recommended_focus is not None
+                else NextActionKind.MANUAL_FALLBACK
+            ),
+            reason=NextActionReason.TRUNCATED,
+        )
+    unavailable = {
+        RetrievalDiagnosticCode.SEARCH_UNAVAILABLE,
+        RetrievalDiagnosticCode.GRAPH_UNAVAILABLE,
+    }
+    if diagnostic_codes & unavailable or confidence.status is ConfidenceStatus.DEGRADED:
+        return NextAction(
+            kind=NextActionKind.MANUAL_FALLBACK,
+            reason=NextActionReason.RETRIEVAL_UNAVAILABLE,
+        )
+    return NextAction()
+
+
+def _merge_retrieval_evidence(
+    snippets: Sequence[_PreparedSnippet],
+) -> tuple[RetrievalEvidence, ...]:
+    selected = {
+        _retrieval_evidence_sort_key(evidence): evidence
+        for snippet in snippets
+        for evidence in snippet.evidence
+    }
+    return tuple(selected[key] for key in sorted(selected))
+
+
+def _retrieval_evidence_sort_key(
+    evidence: RetrievalEvidence,
+) -> tuple[str, str, str, str, int, float, str]:
+    return (
+        evidence.kind.value,
+        evidence.query,
+        evidence.seed_id or "",
+        evidence.relation_kind.value if evidence.relation_kind is not None else "",
+        evidence.distance or 0,
+        -evidence.source_score,
+        evidence.explanation,
+    )
 
 
 def _git_hunk_line_count(content: str) -> int:

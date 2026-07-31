@@ -182,6 +182,16 @@ class TreeSitterAdapter(ABC):
             return node.child_by_field_name("function") or node.child_by_field_name("name") or node
         return node
 
+    def fact_metadata(
+        self,
+        node: Node,
+        source: bytes,
+        kind: FactKind,
+        target_text: str,
+        parent: ParentSymbol | None,
+    ) -> dict[str, Any]:
+        return {}
+
     def _extract_symbol(
         self,
         node: Node,
@@ -265,6 +275,13 @@ class TreeSitterAdapter(ABC):
             target_text=target_text,
             source_range=source_range(node),
             source_symbol_id=parent.id if parent else None,
+            metadata=self.fact_metadata(
+                node,
+                source,
+                kind,
+                target_text,
+                parent,
+            ),
         )
 
     def _configuration_facts(

@@ -19,6 +19,7 @@ from monas_lens.graph.builder import GraphBuilder, GraphBuildSummary
 from monas_lens.indexing.contracts import FileCandidate, ParseStatus
 from monas_lens.indexing.scanner import RepositoryScanner
 from monas_lens.indexing.store import StoredFile, StructuralStore
+from monas_lens.indexing.version import CURRENT_EXTRACTOR_VERSION
 from monas_lens.locking import repository_lock
 from monas_lens.parsing.registry import ParserRegistry
 from monas_lens.repositories import RepositoryRecord, RepositoryService
@@ -292,6 +293,8 @@ class IndexService:
         retry_failed: bool,
     ) -> bool:
         if full or previous is None:
+            return True
+        if previous.indexed_extractor_version != CURRENT_EXTRACTOR_VERSION:
             return True
         if previous.parse_status in {ParseStatus.FAILED, ParseStatus.STALE}:
             return retry_failed or previous.observed_hash != candidate.content_hash

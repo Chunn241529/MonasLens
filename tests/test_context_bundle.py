@@ -190,6 +190,11 @@ def test_bundle_materializes_deduplicates_and_selects_relevant_git_context(
         "primary",
         "duplicate",
     }
+    assert first.snippets[0].roles == (
+        CandidateRole.PRIMARY,
+        CandidateRole.DEPENDENCY,
+    )
+    assert first.snippets[0].evidence
     assert [target.candidate.entity_id for target in first.primary_targets] == ["primary"]
     assert first.snippets[-1].relative_path == "src/service.py"
     assert first.validation_commands[0].arguments == (

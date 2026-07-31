@@ -92,6 +92,8 @@ class ContextCompiler:
             requested_tokens=parsed.max_tokens or self._settings.context_max_total_tokens,
             diagnostics=outcome.diagnostics,
             git_diff_hunks=batch.git_diff_hunks,
+            freshness=batch.freshness,
+            freshness_changed_paths=batch.freshness_changed_paths,
             retrieval_truncated=outcome.truncated,
         )
         _log_stage(

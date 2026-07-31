@@ -15,9 +15,9 @@ from monas_lens.retrieval.contracts import (
     ScoreComponents,
 )
 
-EXACT_WEIGHT = 0.35
-GRAPH_WEIGHT = 0.25
-LEXICAL_WEIGHT = 0.20
+EXACT_WEIGHT = 0.45
+GRAPH_WEIGHT = 0.20
+LEXICAL_WEIGHT = 0.15
 TEST_WEIGHT = 0.10
 SEMANTIC_WEIGHT = 0.10
 ENABLED_WEIGHT_TOTAL = EXACT_WEIGHT + GRAPH_WEIGHT + LEXICAL_WEIGHT + TEST_WEIGHT
@@ -29,12 +29,13 @@ _MAX_EVIDENCE_PER_CANDIDATE = 32
 _ROLE_PRIORITY = {
     CandidateRole.PRIMARY: 0,
     CandidateRole.INTERFACE: 1,
-    CandidateRole.SCHEMA: 2,
-    CandidateRole.CONFIGURATION: 3,
-    CandidateRole.DEPENDENCY: 4,
-    CandidateRole.CALLER: 5,
-    CandidateRole.TEST: 6,
-    CandidateRole.GIT_DIFF: 7,
+    CandidateRole.IMPLEMENTATION: 2,
+    CandidateRole.SCHEMA: 3,
+    CandidateRole.CONFIGURATION: 4,
+    CandidateRole.DEPENDENCY: 5,
+    CandidateRole.CALLER: 6,
+    CandidateRole.TEST: 7,
+    CandidateRole.GIT_DIFF: 8,
 }
 _EVIDENCE_PRIORITY = {
     EvidenceKind.EXACT: 0,

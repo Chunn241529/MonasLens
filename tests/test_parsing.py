@@ -180,7 +180,104 @@ def test_dart_method_body_facts_belong_to_method() -> None:
     assert all(fact.source_symbol_id == method.id for fact in calls)
 
 
-def test_parser_diagnostics_cover_all_initial_languages() -> None:
+def test_explicit_receiver_types_are_added_to_call_fact_metadata() -> None:
+    result = ParserRegistry().extract(
+        Language.PYTHON,
+        "controller.py",
+        b"class Service:\n"
+        b"    def run(self) -> None:\n"
+        b"        pass\n\n"
+        b"def execute() -> None:\n"
+        b"    service = Service()\n"
+        b"    service.run()\n",
+    )
+
+    run_call = next(
+        fact
+        for fact in result.facts
+        if fact.kind is FactKind.CALL and fact.target_text == "service.run"
+    )
+
+    assert run_call.metadata == {"receiver_type": "Service"}
+
+
+def test_conflicting_receiver_types_remain_unresolved_metadata() -> None:
+    result = ParserRegistry().extract(
+        Language.PYTHON,
+        "controller.py",
+        b"def execute(flag: bool) -> None:\n"
+        b"    service = FirstService()\n"
+        b"    if flag:\n"
+        b"        service = SecondService()\n"
+        b"    service.run()\n",
+    )
+
+    run_call = next(
+        fact
+        for fact in result.facts
+        if fact.kind is FactKind.CALL and fact.target_text == "service.run"
+    )
+
+    assert run_call.metadata == {}
+
+
+def test_python_route_parameter_emits_schema_fact() -> None:
+    result = ParserRegistry().extract(
+        Language.PYTHON,
+        "routes.py",
+        b"@app.post('/users')\n"
+        b"def create_user(payload: UserCreate) -> str:\n"
+        b"    return payload.name\n",
+    )
+    handler = next(symbol for symbol in result.symbols if symbol.name == "create_user")
+    schema = next(fact for fact in result.facts if fact.kind is FactKind.SCHEMA)
+
+    assert schema.target_text == "UserCreate"
+    assert schema.source_symbol_id == handler.id
+
+
+def test_go_extracts_types_functions_methods_imports_calls_and_tests() -> None:
+    source = b"""package service
+
+import "fmt"
+
+type Service struct{}
+
+func NewService() *Service {
+    return &Service{}
+}
+
+func (service *Service) Run(value int) string {
+    return fmt.Sprint(value)
+}
+
+func TestService(t *testing.T) {
+    NewService().Run(1)
+}
+"""
+
+    result = ParserRegistry().extract(Language.GO, "service_test.go", source)
+
+    assert not result.has_errors
+    symbols = {symbol.name: symbol for symbol in result.symbols}
+    assert {name: symbol.kind for name, symbol in symbols.items()} == {
+        "Service": SymbolKind.CLASS,
+        "NewService": SymbolKind.FUNCTION,
+        "Run": SymbolKind.METHOD,
+        "TestService": SymbolKind.TEST,
+    }
+    assert symbols["Run"].parameters == ("value int",)
+    assert symbols["Run"].return_type == "string"
+    assert symbols["TestService"].metadata["is_test"] is True
+    assert any(
+        fact.kind is FactKind.IMPORT and fact.target_text == '"fmt"' for fact in result.facts
+    )
+    call_targets = {fact.target_text for fact in result.facts if fact.kind is FactKind.CALL}
+    assert {"fmt.Sprint", "NewService", "NewService().Run"} <= call_targets
+    assert all(symbol.source_range.end_byte <= len(source) for symbol in result.symbols)
+
+
+def test_parser_diagnostics_cover_all_supported_languages() -> None:
     diagnostics = ParserRegistry().diagnostics()
 
     assert diagnostics == {
@@ -189,4 +286,5 @@ def test_parser_diagnostics_cover_all_initial_languages() -> None:
         "typescript": True,
         "tsx": True,
         "dart": True,
+        "go": True,
     }

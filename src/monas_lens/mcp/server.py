@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -9,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from monas_lens.agent_skill import AGENT_SKILL_RESOURCE_URI, get_agent_skill
 from monas_lens.config import load_settings
 from monas_lens.db.migration import database_is_current
 from monas_lens.db.session import Database
@@ -21,14 +24,22 @@ from monas_lens.mcp.service import CommunityTools
 def create_server() -> FastMCP[None]:
     """Create a stateless stdio server backed by short-lived local runtimes."""
 
+    agent_skill = get_agent_skill(cli_command_prefix=_cli_command_prefix())
     server = FastMCP(
         "Monas Lens",
-        instructions=(
-            "Call resolve_task_context first. Call expand_context at most once for one missing "
-            "relationship. After editing, call analyze_patch_impact. Validation commands are "
-            "display-only argument arrays. Repository source remains local."
-        ),
+        instructions=agent_skill.instructions,
     )
+
+    def _agent_skill_resource() -> str:
+        return agent_skill.instructions
+
+    server.resource(
+        AGENT_SKILL_RESOURCE_URI,
+        name="monas-lens-agent-skill",
+        title="Monas Lens Agent Skill",
+        description="Versioned operating guidance for efficient repository retrieval.",
+        mime_type="text/markdown",
+    )(_agent_skill_resource)
 
     def _resolve_task_context(
         task: str,
@@ -134,12 +145,11 @@ def _run_tool[T](callback: Callable[[CommunityTools], T]) -> T:
     settings = load_settings()
     configure_logging(settings)
     if settings.database_path is None or not settings.database_path.exists():
-        raise ToolError(f"{ErrorCode.DATABASE_NOT_INITIALIZED.value}: Run `monas-lens init` first.")
+        raise _database_recovery_error("Monas Lens storage is not initialized.")
     database = Database(settings)
     try:
         if not database_is_current(database.engine):
-            raise ToolError(
-                f"{ErrorCode.DATABASE_NOT_INITIALIZED.value}: "
+            raise _database_recovery_error(
                 "The local database requires initialization or migration."
             )
         with operation_context():
@@ -148,3 +158,14 @@ def _run_tool[T](callback: Callable[[CommunityTools], T]) -> T:
         raise ToolError(f"{exc.code.value}: {exc.message}") from None
     finally:
         database.dispose()
+
+
+def _cli_command_prefix() -> tuple[str, ...]:
+    return (sys.executable, "-m", "monas_lens")
+
+
+def _database_recovery_error(message: str) -> ToolError:
+    recovery_command = json.dumps((*_cli_command_prefix(), "init"))
+    return ToolError(
+        f"{ErrorCode.DATABASE_NOT_INITIALIZED.value}: {message} recovery_command={recovery_command}"
+    )

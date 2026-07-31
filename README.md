@@ -30,6 +30,7 @@ Initialize Monas Lens and build a structural index:
 ```console
 uv run monas-lens init
 uv run monas-lens repo add .
+uv run monas-lens skill
 uv run monas-lens doctor
 uv run monas-lens index build
 uv run monas-lens index status
@@ -37,6 +38,9 @@ uv run monas-lens search normalize_value
 uv run monas-lens graph neighbors normalize_value
 uv run monas-lens graph traverse normalize_value --depth 2 --relations calls,tested_by
 uv run monas-lens context resolve "Explain GraphService.neighbors" --no-git-diff
+uv run monas-lens context expand "Explain GraphService.neighbors" --focus GraphService.neighbors
+uv run monas-lens impact analyze --task "Explain GraphService.neighbors"
+uv run monas-lens output compress test-output.txt --kind test
 uv run monas-lens mcp
 ```
 
@@ -49,6 +53,8 @@ uv run ruff format --check .
 uv run ruff check .
 uv run pyright
 uv run pytest
+uv run python benchmarks/phase5_retrieval_quality.py --repetitions 3
+uv lock --check
 uv build
 ```
 
@@ -63,7 +69,7 @@ The Community edition provides:
 - a local MCP server; and
 - focused context retrieval for coding agents.
 
-The structural index targets Python, JavaScript, TypeScript, TSX, and Dart.
+The structural index targets Python, JavaScript, TypeScript, TSX, Dart, and Go.
 
 The index currently extracts:
 
@@ -78,17 +84,38 @@ hop or `graph traverse` for bounded breadth-first traversal. Both support `--dir
 
 Files are hashed with SHA-256. Unchanged files are not reparsed, changed files are replaced
 atomically, deleted files are removed, and a failed parse preserves the last known-good records.
+An extractor-version migration forces exactly one safe reparse when extraction semantics change.
 
-The Context Compiler is available through `monas-lens context resolve`. It returns deterministic
-JSON with ranked primary targets, bounded relationship context, confidence evidence, estimated
-token accounting, relevant Git hunks, and display-only validation argument arrays.
+The Context Compiler is available through `monas-lens context resolve`. Schema 1.1 returns
+deterministic JSON with deduplicated primary targets, multi-role snippets, relationship evidence,
+confidence, token accounting, relevant Git hunks, display-only validation argument arrays, and a
+machine-readable `next_action`. Stale focused files return `refresh_index`; accepted bundles return
+`none`.
 
-The internal MCP server exposes four read-only tools over stdio:
+CLI-only agents have the same workflow as MCP clients:
+
+- `context expand` performs the single focused expansion and omits every `--known-hash`;
+- `impact analyze` checks the bounded current diff against indexed relationships; and
+- `output compress` reads UTF-8 from a file or stdin (`-`) and retains failures and summaries.
+
+Monas Lens embeds a versioned agent skill that tells clients to prefer one focused context request,
+reuse exact returned snippets, expand at most once, and fall back to grep/glob/full-file reads only
+for explicit retrieval gaps. MCP clients receive the skill automatically in the initialization
+response and can also read `monas-lens://agent-skill`. CLI agents can load the identical contract
+with `monas-lens skill --json`.
+
+The internal MCP server exposes the skill resource and four read-only tools over stdio:
 
 - `resolve_task_context` (mandatory first discovery call);
 - `expand_context` (one explicit missing relationship, returning only new content hashes);
 - `analyze_patch_impact` (bounded current-diff structural impact); and
 - `compress_command_output` (bounded test/build/compiler/linter/diff summaries).
+
+The deterministic Phase 5 release benchmark covers 13 mixed-language retrieval workflows. The
+current three-repetition gate achieves 100% primary top-1/top-3 and required/optional role recall,
+one discovery call at p95, zero manual fallbacks or duplicate snippet hashes, 91.01% estimated token
+reduction versus whole-file reads, and 175.775 ms p95 retrieval latency on the validated Windows
+environment.
 
 See [Phase 5 internal setup](docs/PHASE_5_INTERNAL_SETUP.md) for Codex and Claude Code
 configuration. MCP clients must start the server as a subprocess; do not run it behind FastAPI or

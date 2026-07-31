@@ -1,5 +1,7 @@
 """Community MCP transport and tool services."""
 
+from typing import TYPE_CHECKING
+
 from monas_lens.mcp.compression import compress_command_output
 from monas_lens.mcp.contracts import (
     CommandKind,
@@ -11,7 +13,9 @@ from monas_lens.mcp.contracts import (
     PatchImpact,
 )
 from monas_lens.mcp.impact import PatchImpactAnalyzer
-from monas_lens.mcp.service import CommunityTools
+
+if TYPE_CHECKING:
+    from monas_lens.community import CommunityTools
 
 __all__ = [
     "CommandKind",
@@ -25,3 +29,11 @@ __all__ = [
     "PatchImpactAnalyzer",
     "compress_command_output",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "CommunityTools":
+        from monas_lens.community import CommunityTools
+
+        return CommunityTools
+    raise AttributeError(name)

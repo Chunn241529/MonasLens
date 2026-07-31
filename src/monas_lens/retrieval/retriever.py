@@ -26,6 +26,7 @@ from monas_lens.retrieval.contracts import (
     DiagnosticSeverity,
     EntityType,
     EvidenceKind,
+    FreshnessStatus,
     RetrievalCandidate,
     RetrievalDiagnostic,
     RetrievalDiagnosticCode,
@@ -44,12 +45,13 @@ _GIT_DIFF_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _ROLE_PRIORITY = {
     CandidateRole.PRIMARY: 0,
     CandidateRole.INTERFACE: 1,
-    CandidateRole.SCHEMA: 2,
-    CandidateRole.CONFIGURATION: 3,
-    CandidateRole.DEPENDENCY: 4,
-    CandidateRole.CALLER: 5,
-    CandidateRole.TEST: 6,
-    CandidateRole.GIT_DIFF: 7,
+    CandidateRole.IMPLEMENTATION: 2,
+    CandidateRole.SCHEMA: 3,
+    CandidateRole.CONFIGURATION: 4,
+    CandidateRole.DEPENDENCY: 5,
+    CandidateRole.CALLER: 6,
+    CandidateRole.TEST: 7,
+    CandidateRole.GIT_DIFF: 8,
 }
 
 
@@ -131,6 +133,8 @@ class RetrievalBatch:
     primary_seeds: tuple[RetrievalCandidate, ...]
     diagnostics: tuple[RetrievalDiagnostic, ...]
     git_diff_hunks: tuple[GitDiffHunk, ...] = ()
+    freshness: FreshnessStatus = FreshnessStatus.UNKNOWN
+    freshness_changed_paths: tuple[str, ...] = ()
     truncated: bool = False
 
 
@@ -356,7 +360,31 @@ _GRAPH_BRANCHES = (
     _GraphBranch(
         CandidateRole.INTERFACE,
         GraphDirection.OUTGOING,
-        frozenset({RelationKind.INHERITS, RelationKind.IMPLEMENTS}),
+        frozenset(
+            {
+                RelationKind.INHERITS,
+                RelationKind.IMPLEMENTS,
+                RelationKind.OVERRIDES,
+            }
+        ),
+        "context_max_dependency_snippets",
+    ),
+    _GraphBranch(
+        CandidateRole.IMPLEMENTATION,
+        GraphDirection.INCOMING,
+        frozenset(
+            {
+                RelationKind.INHERITS,
+                RelationKind.IMPLEMENTS,
+                RelationKind.OVERRIDES,
+            }
+        ),
+        "context_max_dependency_snippets",
+    ),
+    _GraphBranch(
+        CandidateRole.SCHEMA,
+        GraphDirection.OUTGOING,
+        frozenset({RelationKind.USES_SCHEMA}),
         "context_max_dependency_snippets",
     ),
     _GraphBranch(
@@ -386,6 +414,7 @@ class ParallelRetriever:
         graph_adapter_factory: Callable[[], GraphAdapterProtocol] | None = None,
         git_diff_adapter: GitDiffAdapterProtocol | None = None,
     ) -> None:
+        self._database = database
         self._settings = settings
         self._repositories = RepositoryService(database, settings)
         self._search_adapter_factory = search_adapter_factory or (
@@ -460,12 +489,19 @@ class ParallelRetriever:
         final_seeds = tuple(
             by_identity[seed.identity] for seed in primary_seeds if seed.identity in by_identity
         )
+        freshness_diagnostics, freshness_changed_paths = self._freshness_diagnostics(
+            repository.id,
+            repository.canonical_path,
+            final_seeds,
+            git_result.hunks,
+        )
         diagnostics = _bounded_diagnostics(
             (
                 *resolution.diagnostics,
                 *query_diagnostics,
                 *repository_diagnostics,
                 *graph_diagnostics,
+                *freshness_diagnostics,
             ),
             self._settings.context_max_retrieval_diagnostics,
         )
@@ -476,13 +512,66 @@ class ParallelRetriever:
             or candidate_truncated
             or git_result.truncated
         )
+        git_unavailable = any(
+            diagnostic.code is RetrievalDiagnosticCode.GIT_UNAVAILABLE
+            for diagnostic in (*repository_diagnostics, *graph_diagnostics)
+        )
+        freshness = FreshnessStatus.UNKNOWN
+        if include_git_diff and repository.is_git_repository and not git_unavailable:
+            freshness = (
+                FreshnessStatus.STALE if freshness_changed_paths else FreshnessStatus.CURRENT
+            )
         return RetrievalBatch(
             repository_id=repository.id,
             candidates=all_candidates,
             primary_seeds=final_seeds,
             diagnostics=diagnostics,
             git_diff_hunks=git_result.hunks,
+            freshness=freshness,
+            freshness_changed_paths=freshness_changed_paths,
             truncated=truncated,
+        )
+
+    def _freshness_diagnostics(
+        self,
+        repository_id: str,
+        repository_root: Path,
+        primary_seeds: Sequence[RetrievalCandidate],
+        hunks: Sequence[GitDiffHunk],
+    ) -> tuple[tuple[RetrievalDiagnostic, ...], tuple[str, ...]]:
+        if not primary_seeds:
+            return (), ()
+        primary_path = primary_seeds[0].relative_path
+        if primary_path not in {hunk.relative_path for hunk in hunks}:
+            return (), ()
+        with self._database.session() as session:
+            indexed = session.scalar(
+                select(FileModel).where(
+                    FileModel.repository_id == repository_id,
+                    FileModel.relative_path == primary_path,
+                )
+            )
+        source_path = repository_root.joinpath(*PurePosixPath(primary_path).parts)
+        try:
+            current_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        except OSError:
+            current_hash = None
+        if (
+            indexed is not None
+            and indexed.indexed_hash is not None
+            and current_hash == indexed.indexed_hash
+        ):
+            return (), ()
+        return (
+            (
+                RetrievalDiagnostic(
+                    code=RetrievalDiagnosticCode.INDEX_STALE,
+                    severity=DiagnosticSeverity.WARNING,
+                    message=f"Indexed content is stale for changed path: {primary_path}",
+                    role=CandidateRole.PRIMARY,
+                ),
+            ),
+            (primary_path,),
         )
 
     def widen(
@@ -637,12 +726,17 @@ class ParallelRetriever:
                     branch_candidates = _graph_candidates(response, job)
                     candidates.extend(branch_candidates)
                     truncated = truncated or response.truncated
-                except Exception:
+                except Exception as exc:
+                    failure = (
+                        exc.code.value if isinstance(exc, MonasLensError) else type(exc).__name__
+                    )
                     diagnostics.append(
                         RetrievalDiagnostic(
                             code=RetrievalDiagnosticCode.GRAPH_UNAVAILABLE,
                             severity=DiagnosticSeverity.WARNING,
-                            message="An optional graph retrieval branch was unavailable.",
+                            message=(
+                                f"An optional graph retrieval branch was unavailable ({failure})."
+                            ),
                             role=job.branch.role,
                         )
                     )
@@ -862,6 +956,47 @@ def _graph_candidates(
     nodes = {node.id: node for node in response.nodes}
     candidates: list[RetrievalCandidate] = []
     ordinal_base = 10_000 + (job.ordinal * _GRAPH_ORDINAL_STRIDE)
+    if any(
+        edge.kind in job.branch.relation_kinds
+        and edge.source_id == response.root.id
+        and edge.target_id == response.root.id
+        for edge in response.edges
+    ):
+        candidates.append(
+            RetrievalCandidate(
+                repository_id=response.repository_id,
+                entity_type=(
+                    EntityType.SYMBOL if response.root.node_type == "symbol" else EntityType.FILE
+                ),
+                entity_id=response.root.id,
+                relative_path=response.root.relative_path,
+                language=response.root.language,
+                kind=response.root.kind,
+                name=response.root.name,
+                qualified_name=response.root.qualified_name,
+                start_line=response.root.start_line or 1,
+                end_line=response.root.end_line or response.root.start_line or 1,
+                role_hints=(job.branch.role,),
+                evidence=(
+                    RetrievalEvidence(
+                        kind=EvidenceKind.GRAPH,
+                        query=job.seed.entity_id,
+                        seed_id=job.seed.entity_id,
+                        relation_kind=next(
+                            edge.kind
+                            for edge in response.edges
+                            if edge.kind in job.branch.relation_kinds
+                            and edge.source_id == response.root.id
+                            and edge.target_id == response.root.id
+                        ),
+                        distance=1,
+                        source_score=1.0,
+                        explanation="Repository graph self-relationship from a primary seed.",
+                    ),
+                ),
+                retrieval_ordinal=ordinal_base,
+            )
+        )
     for node_id, distance in sorted(
         distances.items(),
         key=lambda item: _graph_node_sort_key(nodes[item[0]], item[1]),
@@ -1130,7 +1265,11 @@ def _select_diff_path(old_path: str | None, new_path: str | None) -> str | None:
 
 
 def _graph_target(seed: RetrievalCandidate) -> str:
-    return seed.relative_path if seed.entity_type is EntityType.CHUNK else seed.entity_id
+    return (
+        seed.entity_id
+        if seed.entity_type in {EntityType.FILE, EntityType.SYMBOL}
+        else seed.relative_path
+    )
 
 
 def _candidate_source_sort_key(

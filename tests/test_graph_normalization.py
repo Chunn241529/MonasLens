@@ -142,3 +142,37 @@ def test_configuration_and_unsupported_targets_are_explicit() -> None:
     assert configuration.relation_kind is RelationKind.CONFIGURED_BY
     assert not unsupported.supported
     assert unsupported.diagnostic == "unsupported_symbol_target"
+
+
+def test_named_and_star_reexports_preserve_module_evidence() -> None:
+    named = normalize_fact(
+        Language.TYPESCRIPT,
+        FactKind.EXPORT,
+        "export { fetchUser as publicFetch } from './api';",
+        "src/index.ts",
+    )
+    star = normalize_fact(
+        Language.TYPESCRIPT,
+        FactKind.EXPORT,
+        "export * from './models';",
+        "src/index.ts",
+    )
+
+    assert named.relation_kind is RelationKind.EXPORTS
+    assert named.targets[0].imported_name == "fetchUser"
+    assert named.targets[0].alias == "publicFetch"
+    assert "src/api.ts" in named.targets[0].candidate_paths
+    assert star.relation_kind is RelationKind.EXPORTS
+    assert star.targets[0].alias == "*"
+
+
+def test_schema_fact_normalizes_to_type_relationship() -> None:
+    normalized = normalize_fact(
+        Language.PYTHON,
+        FactKind.SCHEMA,
+        "UserCreate",
+        "routes.py",
+    )
+
+    assert normalized.relation_kind is RelationKind.USES_SCHEMA
+    assert normalized.targets[0].value == "UserCreate"

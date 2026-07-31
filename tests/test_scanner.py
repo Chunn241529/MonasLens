@@ -13,6 +13,7 @@ def test_language_detection() -> None:
     assert detect_language(Path("service.ts")) is Language.TYPESCRIPT
     assert detect_language(Path("component.tsx")) is Language.TSX
     assert detect_language(Path("service.dart")) is Language.DART
+    assert detect_language(Path("service.go")) is Language.GO
     assert detect_language(Path("README.md")) is None
 
 

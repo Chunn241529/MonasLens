@@ -42,6 +42,42 @@ repository upload.
   configuration.
 - An official SDK client smoke test covers stdio initialization, tool discovery, and tool execution.
 
+### P5-05 — Embedded agent skill ✅
+
+- MCP initialization delivers the versioned Monas Lens operating skill before normal tool use.
+- `monas-lens://agent-skill` exposes the same guidance as a read-only Markdown resource.
+- `monas-lens skill [--json]` gives CLI-based agents the identical versioned contract.
+- Guidance limits normal discovery to one context request and at most one targeted expansion.
+
+### P5-06 — Retrieval-efficiency release gate ✅
+
+- Build a gold task suite with expected primary symbols, callers, dependencies/callees,
+  interfaces, tests, and configuration.
+- Measure primary/related-symbol recall, redundant snippet rate, full-file fallback rate, discovery
+  tool calls, returned tokens, and post-index latency.
+- Gate public readiness on median one discovery call, p95 at most two calls, at least 60% fewer
+  context tokens, and retrieval under 500 ms after indexing.
+- Record local benchmark fallback reasons so missing relationships can be fixed instead of hidden by
+  grep or glob.
+
+### P5-07 — Related-symbol closure completeness ✅
+
+- Resolve import aliases, re-exports, receiver/type-aware method calls, constructors,
+  overrides/implementations, and framework registration/decorator edges.
+- Build bounded role-aware closure that preserves required callers, dependencies/callees,
+  interfaces, tests, and configuration before lower-value lexical matches.
+- Add per-snippet relationship provenance and prevent token budgeting from silently removing every
+  candidate for a required role.
+
+### P5-08 — CLI parity and freshness ✅
+
+- Add CLI equivalents for targeted expansion, patch impact, and output compression so MCP and CLI
+  agents follow one workflow.
+- Detect stale indexed files before context resolution and provide a bounded refresh or explicit
+  recovery action.
+- Return a machine-readable next action and recommended focus target when confidence is degraded or
+  required roles are missing.
+
 ## Internal constraints
 
 - Initialize storage and register/index a repository before calling repository-backed tools.

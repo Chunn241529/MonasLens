@@ -9,8 +9,11 @@ from enum import StrEnum
 class RelationKind(StrEnum):
     IMPORTS = "imports"
     CALLS = "calls"
+    EXPORTS = "exports"
     INHERITS = "inherits"
     IMPLEMENTS = "implements"
+    OVERRIDES = "overrides"
+    USES_SCHEMA = "uses_schema"
     TESTED_BY = "tested_by"
     CONFIGURED_BY = "configured_by"
 

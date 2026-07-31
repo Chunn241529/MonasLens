@@ -32,7 +32,7 @@ from monas_lens.retrieval import (
     parse_task_context_request,
 )
 
-EXPECTED_SCHEMA_SHA256 = "046d2edfa89fa859509cd6a92ac8dad4625404c9f6c8bbdcd3380dd205680240"
+EXPECTED_SCHEMA_SHA256 = "dd14a41243454fca999ffd05324e24b741e35a0b3dbeba5d00342a22a4caf5ec"
 
 
 def test_context_settings_defaults_and_bounds(tmp_path: Path) -> None:

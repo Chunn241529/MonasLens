@@ -48,6 +48,7 @@ class FactKind(StrEnum):
     IMPLEMENTS = "implements"
     DECORATOR = "decorator"
     ROUTE = "route"
+    SCHEMA = "schema"
     TESTS = "tests"
     CONFIGURATION = "configuration"
 

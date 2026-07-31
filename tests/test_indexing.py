@@ -13,6 +13,7 @@ from monas_lens.indexing.contracts import ParseStatus
 from monas_lens.indexing.scanner import RepositoryScanner
 from monas_lens.indexing.service import IndexService
 from monas_lens.indexing.store import StructuralStore
+from monas_lens.indexing.version import CURRENT_EXTRACTOR_VERSION
 from monas_lens.locking import repository_lock
 from monas_lens.parsing.registry import ParserRegistry
 from monas_lens.repositories import RepositoryService
@@ -116,6 +117,7 @@ def test_failed_parse_preserves_last_known_good_records(
     assert stale.parse_status is ParseStatus.STALE
     assert stale.indexed_hash == before.indexed_hash
     assert stale.observed_hash != stale.indexed_hash
+    assert stale.indexed_extractor_version == CURRENT_EXTRACTOR_VERSION
     assert stale.symbol_count == before.symbol_count
 
     skipped = service.build()

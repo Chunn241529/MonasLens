@@ -226,3 +226,88 @@ def test_configuration_and_javascript_test_links_are_conservative(
         "execute",
         "executes service",
     ) in relationships
+
+
+def test_graph_closes_typed_receivers_reexports_implementations_and_schemas(
+    database: Database,
+    settings: Settings,
+    tmp_path: Path,
+) -> None:
+    repository_root = tmp_path / "repository"
+    repository_root.mkdir()
+    (repository_root / "service.py").write_text(
+        "class Service:\n    def run(self) -> str:\n        return 'ok'\n",
+        encoding="utf-8",
+    )
+    (repository_root / "controller.py").write_text(
+        "from service import Service\n\n"
+        "def execute() -> str:\n"
+        "    service = Service()\n"
+        "    return service.run()\n",
+        encoding="utf-8",
+    )
+    (repository_root / "base.py").write_text(
+        "class Base:\n    def run(self, value: int) -> int:\n        return value\n",
+        encoding="utf-8",
+    )
+    (repository_root / "child.py").write_text(
+        "from base import Base\n\n"
+        "class Child(Base):\n"
+        "    def run(self, value: int) -> int:\n"
+        "        return value + 1\n",
+        encoding="utf-8",
+    )
+    (repository_root / "contracts.ts").write_text(
+        "export interface Runner { run(value: number): string; }\n",
+        encoding="utf-8",
+    )
+    (repository_root / "runner.ts").write_text(
+        "import { Runner } from './contracts';\n"
+        "export class LocalRunner implements Runner {\n"
+        "  run(value: number): string { return String(value); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (repository_root / "api.ts").write_text(
+        "export function fetchUser(): string { return 'user'; }\n",
+        encoding="utf-8",
+    )
+    (repository_root / "index.ts").write_text(
+        "export { fetchUser } from './api';\n",
+        encoding="utf-8",
+    )
+    (repository_root / "consumer.ts").write_text(
+        "import { fetchUser } from './index';\n"
+        "export function useUser(): string { return fetchUser(); }\n",
+        encoding="utf-8",
+    )
+    (repository_root / "schemas.py").write_text(
+        "class UserCreate:\n    def __init__(self, name: str) -> None:\n        self.name = name\n",
+        encoding="utf-8",
+    )
+    (repository_root / "routes.py").write_text(
+        "from schemas import UserCreate\n\n"
+        "@app.post('/users')\n"
+        "def create_user(payload: UserCreate) -> str:\n"
+        "    return payload.name\n",
+        encoding="utf-8",
+    )
+    (repository_root / "configuration.py").write_text(
+        "import os\n\ndef load_config() -> str:\n    return os.getenv('API_URL', '')\n",
+        encoding="utf-8",
+    )
+    repository = RepositoryService(database, settings).add(repository_root)
+
+    IndexService(database, settings).build(repository.id)
+    relationships = _relationship_names(database, repository.id)
+
+    assert (RelationKind.CALLS.value, "execute", "run") in relationships
+    assert (RelationKind.IMPLEMENTS.value, "LocalRunner", "Runner") in relationships
+    assert (RelationKind.OVERRIDES.value, "run", "run") in relationships
+    assert (RelationKind.CALLS.value, "useUser", "fetchUser") in relationships
+    assert (RelationKind.USES_SCHEMA.value, "create_user", "UserCreate") in relationships
+    assert (
+        RelationKind.CONFIGURED_BY.value,
+        "load_config",
+        "load_config",
+    ) in relationships

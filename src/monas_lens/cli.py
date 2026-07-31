@@ -12,6 +12,8 @@ from typing import Annotated, Any
 import typer
 
 from monas_lens import __version__
+from monas_lens.agent_skill import get_agent_skill
+from monas_lens.community import CommunityTools
 from monas_lens.config import (
     Settings,
     ensure_runtime_directories,
@@ -30,6 +32,12 @@ from monas_lens.graph.service import (
 from monas_lens.health import CheckResult, readiness_report
 from monas_lens.indexing.service import IndexService, IndexStatus, IndexSummary
 from monas_lens.logging_config import configure_logging, operation_context
+from monas_lens.mcp.contracts import (
+    CommandKind,
+    CommandOutputSummary,
+    ContextExpansion,
+    PatchImpact,
+)
 from monas_lens.parsing.registry import ParserRegistry
 from monas_lens.repositories import RepositoryRecord, RepositoryService
 from monas_lens.retrieval.compiler import ContextCompiler
@@ -45,10 +53,14 @@ repo_app = typer.Typer(help="Register and select local repositories.")
 index_app = typer.Typer(help="Build and inspect the structural repository index.")
 graph_app = typer.Typer(help="Query resolved repository relationships.")
 context_app = typer.Typer(help="Compile focused repository context for a coding task.")
+impact_app = typer.Typer(help="Analyze the structural impact of the current patch.")
+output_app = typer.Typer(help="Reduce noisy command output for agent consumption.")
 app.add_typer(repo_app, name="repo")
 app.add_typer(index_app, name="index")
 app.add_typer(graph_app, name="graph")
 app.add_typer(context_app, name="context")
+app.add_typer(impact_app, name="impact")
+app.add_typer(output_app, name="output")
 
 _EXIT_CODES = {
     ErrorCode.CONFIGURATION_INVALID: 2,
@@ -61,6 +73,8 @@ _EXIT_CODES = {
     ErrorCode.CONTEXT_REQUEST_INVALID: 2,
     ErrorCode.CONTEXT_BUDGET_INVALID: 2,
     ErrorCode.CONTEXT_RETRIEVAL_FAILED: 7,
+    ErrorCode.MCP_REQUEST_INVALID: 2,
+    ErrorCode.PATCH_IMPACT_FAILED: 7,
     ErrorCode.DATABASE_NOT_INITIALIZED: 5,
     ErrorCode.DATABASE_UNAVAILABLE: 5,
     ErrorCode.PARSER_UNAVAILABLE: 6,
@@ -163,6 +177,22 @@ def mcp_server() -> None:
     from monas_lens.mcp.server import run_stdio_server
 
     run_stdio_server()
+
+
+@app.command("skill")
+def agent_skill(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Print the operating skill for AI agents using Monas Lens."""
+
+    skill = get_agent_skill()
+    _emit(
+        skill.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=skill.instructions,
+    )
 
 
 @repo_app.command("add")
@@ -523,6 +553,120 @@ def context_resolve(
         _emit_context_bundle(bundle, json_output)
 
 
+@context_app.command("expand")
+def context_expand(
+    context: typer.Context,
+    task: Annotated[str, typer.Argument(help="Coding task whose context needs expansion.")],
+    focus_target: Annotated[
+        str,
+        typer.Option("--focus", help="Single file or symbol focus for this expansion."),
+    ],
+    known_hashes: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--known-hash",
+            help="SHA-256 content hash already received; repeat for multiple hashes.",
+        ),
+    ] = None,
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    max_tokens: Annotated[
+        int | None,
+        typer.Option("--max-tokens", help="Maximum estimated context-token budget."),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Expand context once around an explicit focus, omitting known content."""
+
+    with _command_errors(context, json_output):
+        with _community_tools(context) as tools:
+            expansion = tools.expand_context(
+                task,
+                focus_target,
+                identifier,
+                known_content_hashes=tuple(known_hashes or ()),
+                max_tokens=max_tokens,
+            )
+        _emit_context_expansion(expansion, json_output)
+
+
+@impact_app.command("analyze")
+def impact_analyze(
+    context: typer.Context,
+    task: Annotated[
+        str | None,
+        typer.Option("--task", help="Task used to identify unrelated changed paths."),
+    ] = None,
+    identifier: Annotated[
+        str | None,
+        typer.Option(
+            "--repository",
+            "-r",
+            help="Repository ID or path; defaults to active.",
+        ),
+    ] = None,
+    expected_paths: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--expected-path",
+            help="Expected repository-relative changed path; repeat for multiple paths.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Analyze the bounded current Git diff against indexed relationships."""
+
+    with _command_errors(context, json_output):
+        with _community_tools(context) as tools:
+            impact = tools.analyze_patch_impact(
+                identifier,
+                task=task,
+                expected_paths=tuple(expected_paths or ()),
+            )
+        _emit_patch_impact(impact, json_output)
+
+
+@output_app.command("compress")
+def output_compress(
+    context: typer.Context,
+    source: Annotated[
+        Path,
+        typer.Argument(help="UTF-8 output file, or - to read stdin."),
+    ] = Path("-"),
+    command_kind: Annotated[
+        CommandKind,
+        typer.Option("--kind", help="Command-output format hint."),
+    ] = CommandKind.AUTO,
+    max_output_chars: Annotated[
+        int,
+        typer.Option("--max-output-chars", help="Maximum characters in compressed output."),
+    ] = 12_000,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Return machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Compress UTF-8 command output while retaining failures and summaries."""
+
+    with _command_errors(context, json_output):
+        raw_output = _read_output_source(source)
+        summary = CommunityTools.compress_command_output(
+            raw_output,
+            command_kind=command_kind,
+            max_output_chars=max_output_chars,
+        )
+        _emit_command_output_summary(summary, json_output)
+
+
 def _load_runtime_settings(context: typer.Context) -> Settings:
     settings = load_settings()
     configure_logging(settings, debug=bool(context.obj.get("debug", False)))
@@ -577,6 +721,12 @@ def _graph_service(context: typer.Context) -> Generator[GraphService]:
 def _context_compiler(context: typer.Context) -> Generator[ContextCompiler]:
     with _ready_database(context) as (database, settings):
         yield ContextCompiler(database, settings)
+
+
+@contextmanager
+def _community_tools(context: typer.Context) -> Generator[CommunityTools]:
+    with _ready_database(context) as (database, settings):
+        yield CommunityTools(database, settings)
 
 
 @contextmanager
@@ -744,6 +894,57 @@ def _emit_context_bundle(bundle: ContextBundle, json_output: bool) -> None:
         json_output=json_output,
         human_message=human_message,
     )
+
+
+def _emit_context_expansion(expansion: ContextExpansion, json_output: bool) -> None:
+    _emit(
+        expansion.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=(
+            f"Expanded {expansion.focus_target}: {len(expansion.snippets)} new snippet(s), "
+            f"{expansion.omitted_known_snippets} known snippet(s) omitted.\n"
+            f"Confidence: {expansion.confidence.final_confidence:.3f} "
+            f"({expansion.confidence.status.value})"
+        ),
+    )
+
+
+def _emit_patch_impact(impact: PatchImpact, json_output: bool) -> None:
+    _emit(
+        impact.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=(
+            f"Changed paths: {len(impact.changed_paths)}, "
+            f"symbols: {len(impact.changed_symbols)}, "
+            f"callers: {len(impact.affected_callers)}, tests: {len(impact.tests)}\n"
+            f"Risks: {len(impact.risks)}, unrelated changes: "
+            f"{len(impact.unrelated_changes)}"
+        ),
+    )
+
+
+def _emit_command_output_summary(
+    summary: CommandOutputSummary,
+    json_output: bool,
+) -> None:
+    _emit(
+        summary.model_dump(mode="json"),
+        json_output=json_output,
+        human_message=summary.content,
+    )
+
+
+def _read_output_source(source: Path) -> str:
+    if str(source) == "-":
+        return sys.stdin.read()
+    try:
+        return source.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise MonasLensError(
+            ErrorCode.INVALID_PATH,
+            "Command output must be a readable UTF-8 file or stdin (`-`).",
+            details={"path": str(source)},
+        ) from exc
 
 
 def _emit(

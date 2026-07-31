@@ -195,7 +195,15 @@ def test_two_stage_retrieval_assigns_graph_roles(
         if candidate.entity_id != "symbol-alpha"
         for role in candidate.role_hints
     }
-    assert roles == {"caller", "dependency", "interface", "test", "configuration"}
+    assert roles == {
+        "caller",
+        "dependency",
+        "interface",
+        "implementation",
+        "schema",
+        "test",
+        "configuration",
+    }
     assert len(batch.primary_seeds) == 1
 
 
@@ -435,7 +443,7 @@ def test_query_candidate_and_graph_work_are_capped(
     assert len(search_calls) == 2
     assert all(limit == 10 for _, limit in search_calls)
     assert len(batch.primary_seeds) == 3
-    assert len(graph_calls) == 15
+    assert len(graph_calls) == 21
     assert all(depth == 1 and 1 <= limit <= 6 for _, _, depth, limit in graph_calls)
     assert len(batch.candidates) == 10
     assert batch.truncated
@@ -574,6 +582,9 @@ def _graph_response(
         RelationKind.IMPORTS: "dependency",
         RelationKind.INHERITS: "interface",
         RelationKind.IMPLEMENTS: "interface",
+        RelationKind.OVERRIDES: "implementation",
+        RelationKind.USES_SCHEMA: "schema",
+        RelationKind.EXPORTS: "dependency",
         RelationKind.TESTED_BY: "test",
         RelationKind.CONFIGURED_BY: "configuration",
     }[relation]

@@ -75,8 +75,10 @@ Repository on disk
 | `retrieval/bundle.py` | `ContextBundleBuilder` — indexed-chunk materialization, content deduplication, role-aware budget selection, and deterministic bundle assembly |
 | `retrieval/compiler.py` | `ContextCompiler` — Phase 4 orchestration entry point: resolve, retrieve, confidence/widen, materialize, budget, bundle |
 | `retrieval/validation.py` | Conservative manifest-based validation suggestions represented as display-only argument arrays |
+| `community.py` | Transport-independent facade shared by CLI and MCP for resolve, expand, impact, and compression workflows |
 | `mcp/server.py` | FastMCP stdio transport exposing the four read-only Community tools |
-| `mcp/service.py` | Transport-independent MCP tool facade over the Context Compiler, impact analyzer, and output compressor |
+| `mcp/service.py` | Compatibility export for the shared `CommunityTools` facade |
+| `agent_skill.py` | Versioned operating guidance delivered through MCP initialization/resource and the CLI |
 | `mcp/impact.py` | Bounded current-diff impact analysis over indexed symbols and relationships |
 | `mcp/compression.py` | Deterministic bounded command-output compression preserving failures and summaries |
 | `db/session.py` | `Database` — owns SQLAlchemy engine, short-lived sessions, SQLite WAL mode + foreign keys |
@@ -95,7 +97,8 @@ Repository on disk
 
 ### Supported Languages
 
-Python, JavaScript, TypeScript, TSX, Dart. Extension mapping in `indexing/scanner.py:22-34`.
+Python, JavaScript, TypeScript, TSX, Dart, Go. Extension mapping in
+`indexing/scanner.py:22-34`.
 
 ## Code Patterns and Conventions
 
