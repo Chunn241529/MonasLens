@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -20,6 +21,7 @@ _MAX_QUERY_LENGTH = 500
 _MAX_QUERY_TERMS = 20
 _MAX_RESULTS = 100
 _TERM_PATTERN = re.compile(r"\w+", flags=re.UNICODE)
+_EXACT_SINGLE_WORD_DISCOUNT = 0.50
 
 
 class SearchResult(BaseModel):
@@ -63,6 +65,7 @@ class SearchService:
     ) -> SearchResponse:
         normalized_query = query.strip()
         expression = _fts_expression(normalized_query)
+        query_terms = _TERM_PATTERN.findall(normalized_query)[:_MAX_QUERY_TERMS]
         if not 1 <= limit <= _MAX_RESULTS:
             raise MonasLensError(
                 ErrorCode.SEARCH_QUERY_INVALID,
@@ -73,7 +76,7 @@ class SearchService:
         selected = list(exact_results)
         seen = {(result.entity_type, result.entity_id) for result in selected}
         if len(selected) < limit:
-            for result in self._fts_results(repository.id, expression, limit * 2):
+            for result in self._fts_results(repository.id, expression, query_terms, limit * 2):
                 key = (result.entity_type, result.entity_id)
                 if key in seen:
                     continue
@@ -101,6 +104,7 @@ class SearchService:
         query: str,
         limit: int,
     ) -> tuple[SearchResult, ...]:
+        is_single_word = "." not in query and " " not in query
         with self._database.session() as session:
             documents = session.scalars(
                 select(SearchDocumentModel)
@@ -119,19 +123,22 @@ class SearchService:
                 )
                 .limit(limit)
             ).all()
-        return tuple(
-            _model_result(
-                document,
-                match_type="exact",
-                score=(1.0 if document.qualified_name == query else 0.98),
-            )
-            for document in documents
-        )
+        results: list[SearchResult] = []
+        for document in documents:
+            base_score = 1.0 if document.qualified_name == query else 0.98
+            # ponytail: single-word discount prevents generic identifiers (model, name) from
+            # outranking path-concordant FTS hits. Upgrade path: per-language stopword list or
+            # IDF-based term rarity scoring.
+            if is_single_word:
+                base_score *= _EXACT_SINGLE_WORD_DISCOUNT
+            results.append(_model_result(document, match_type="exact", score=base_score))
+        return tuple(results)
 
     def _fts_results(
         self,
         repository_id: str,
         expression: str,
+        query_terms: Sequence[str],
         limit: int,
     ) -> tuple[SearchResult, ...]:
         statement = text(
@@ -176,7 +183,7 @@ class SearchService:
                 .mappings()
                 .all()
             )
-        return tuple(_row_result(row) for row in rows)
+        return tuple(_row_result(row, query_terms) for row in rows)
 
 
 def _fts_expression(query: str) -> str:
@@ -228,14 +235,16 @@ def _model_result(
     )
 
 
-def _row_result(row: RowMapping) -> SearchResult:
+def _row_result(row: RowMapping, query_terms: Sequence[str] = ()) -> SearchResult:
     rank = float(row["rank"])
     relevance = max(-rank, 0.0)
     snippet = _string_or_none(row["snippet"])
+    relative_path = str(row["relative_path"])
+    base_score = round(0.75 + (0.2 * relevance / (1.0 + relevance)), 6)
     return SearchResult(
         entity_type=str(row["entity_type"]),
         entity_id=str(row["entity_id"]),
-        relative_path=str(row["relative_path"]),
+        relative_path=relative_path,
         language=str(row["language"]),
         kind=str(row["kind"]),
         name=_string_or_none(row["name"]),
@@ -246,12 +255,12 @@ def _row_result(row: RowMapping) -> SearchResult:
             _string_or_none(row["signature"]),
             _string_or_none(row["qualified_name"]),
             _string_or_none(row["name"]),
-            str(row["relative_path"]),
+            relative_path,
         ),
         start_line=int(row["start_line"]),
         end_line=int(row["end_line"]),
         match_type="fts",
-        score=round(0.75 + (0.2 * relevance / (1.0 + relevance)), 6),
+        score=base_score,
     )
 
 

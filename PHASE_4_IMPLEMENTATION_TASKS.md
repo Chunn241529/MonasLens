@@ -490,3 +490,44 @@ P4-01 ✅
 
 `P4-01` through `P4-09` are complete. Phase 5 wraps the stable Python service without changing
 Phase 4 bundle contracts. Semantic retrieval remains deferred.
+
+## Post-delivery updates (2026-08-02)
+
+### Ranking weights updated
+
+Original roadmap weights:
+
+| Evidence | Original weight | Current weight |
+|---|---:|---:|
+| Exact symbol | 0.35 | 0.45 |
+| Graph relationship | 0.25 | 0.20 |
+| Lexical match | 0.20 | 0.25 |
+| Test relationship | 0.10 | 0.10 |
+| Semantic similarity | 0.10 | 0.00 (disabled) |
+| **Enabled total** | **0.90** | **1.00** |
+
+Lexical weight increased from 0.15 to 0.25 to improve content-based search recall. Semantic
+weight zeroed. `EXACT_WEIGHT` stays at 0.45 (pure exact still outranks graph+lexical neighbor).
+
+### Confidence table updated
+
+Lexical certainty raised from 0.65 to 0.80. New `path_lexical` tier at 0.85 for file/chunk
+entities with strong lexical concordance (score ≥ 0.70).
+
+### Resolver: UI action keywords + compound queries
+
+CHANGE action expanded with UI/TUI keywords (display, show, render, style, layout, position,
+place, hide, toggle, animate). Adjacent meaningful-identifier pairs emitted as compound FTS5
+queries for narrower matching.
+
+### Single-word exact match discount (search service)
+
+Exact symbol matches for single-word identifiers (no dot separator) discounted by 0.50×.
+Qualified identifiers like `Parser.run` retain full score. Prevents generic identifiers from
+outranking path-concordant lexical results.
+
+### Path-concordant seed selection (retriever)
+
+`_select_primary_seeds` accepts `query_terms` and prioritizes candidates whose filename contains
+a query term (≥6 chars). Promotes file-level hits over unrelated exact symbol matches during seed
+selection, ensuring graph expansion runs from the correct file.

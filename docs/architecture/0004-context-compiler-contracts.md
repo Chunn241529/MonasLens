@@ -27,7 +27,8 @@ ranking separate from confidence and expose degraded results rather than guessin
   deduplicate by stable identities so completion order cannot affect output.
 - Preserve roadmap evidence weights for exact symbol, graph, lexical, test, and semantic signals.
   Semantic evidence remains disabled and zero in Phase 4; enabled weights are normalized over
-  `0.90`. Direct graph/test evidence keeps its full source confidence and depth-two evidence uses
+  `1.00` (updated 2026-08-02: lexical `0.15 → 0.25`, semantic `0.10 → 0.00`, total `0.90 → 1.00`).
+  Direct graph/test evidence keeps its full source confidence and depth-two evidence uses
   a `0.50` decay. Explicit user focus closes at most `0.05` of remaining score headroom and is a
   stable tie-break; inferred focus receives no boost.
 - Keep candidate rank and request confidence as separate values. Confidence below `0.80` permits

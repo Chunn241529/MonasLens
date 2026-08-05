@@ -461,6 +461,7 @@ class ParallelRetriever:
             merged_stage_one,
             self._settings.context_max_primary_targets,
             frozenset(resolution.explicit_focus_targets),
+            query_terms=resolution.identifiers,
         )
         graph_jobs = _plan_graph_jobs(primary_seeds, self._settings)
         graph_candidates, graph_diagnostics, graph_truncated, git_result = self._run_optional_stage(
@@ -874,11 +875,17 @@ def _select_primary_seeds(
     candidates: tuple[RetrievalCandidate, ...],
     limit: int,
     explicit_focus_targets: frozenset[str],
+    *,
+    query_terms: Sequence[str] = (),
 ) -> tuple[RetrievalCandidate, ...]:
+    # ponytail: path concordance check is substring-based. Upgrade path: stem/lemma matching
+    # or per-language path component normalization.
+    path_terms = frozenset(term.lower() for term in query_terms if len(term) >= 3)
     ordered = sorted(
         candidates,
         key=lambda candidate: (
             not _matches_explicit_focus(candidate, explicit_focus_targets),
+            not _matches_path_concordance(candidate, path_terms),
             not any(item.kind is EvidenceKind.EXACT for item in candidate.evidence),
             -max(item.source_score for item in candidate.evidence),
             candidate.entity_type is not EntityType.SYMBOL,
@@ -905,6 +912,18 @@ def _matches_explicit_focus(
             candidate.qualified_name,
         )
     )
+
+
+def _matches_path_concordance(
+    candidate: RetrievalCandidate,
+    path_terms: frozenset[str],
+) -> bool:
+    """Check if the candidate's filename contains any query term (≥4 chars to avoid noise)."""
+    if not path_terms:
+        return False
+    # Match on filename only (last path segment) to avoid false positives from directory names
+    filename = candidate.relative_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    return any(term in filename for term in path_terms if len(term) >= 6)
 
 
 def _plan_graph_jobs(

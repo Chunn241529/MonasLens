@@ -102,3 +102,53 @@ performance guarantee.
 - Current Git context covers the bounded working-tree diff, not Git history.
 - Semantic retrieval, external expansion policy, persistent task state, patch application, and
   validation execution remain outside Phase 4.
+
+## Post-validation updates (2026-08-02)
+
+### Ranking weights rebalanced
+
+| Evidence | Original weight | Current weight |
+|---|---:|---:|
+| Exact symbol | 0.45 | 0.45 |
+| Graph relationship | 0.20 | 0.20 |
+| Lexical match | 0.15 | 0.25 |
+| Test relationship | 0.10 | 0.10 |
+| Semantic similarity | 0.10 (disabled) | 0.00 (disabled) |
+| **Enabled total** | **0.90** | **1.00** |
+
+Lexical weight increased to improve recall on content-based queries (UI tasks, string literals,
+configuration values). Semantic weight zeroed since it was already disabled and contributed nothing.
+
+### Confidence certainty table updated
+
+| Tier | Original | Current |
+|---|---:|---:|
+| missing | 0.0 | 0.0 |
+| ambiguous | 0.35 | 0.35 |
+| fallback | 0.40 | 0.40 |
+| lexical | 0.65 | 0.80 |
+| path_lexical | *(new)* | 0.85 |
+| explicit_focus | 0.85 | 0.85 |
+| exact | 0.95 | 0.95 |
+| exact_explicit_focus | 1.0 | 1.0 |
+
+New `path_lexical` tier applies when the top candidate is a file/chunk entity with lexical score
+≥ 0.70, indicating strong path-concordant match.
+
+### Task resolution: new action keywords
+
+CHANGE action now also recognizes: `display`, `show`, `render`, `style`, `layout`, `position`,
+`place`, `hide`, `toggle`, `animate`. Compound adjacent-pair queries added for better FTS5
+narrowing.
+
+### Single-word exact match discount
+
+Exact symbol matches for single-word identifiers (no `.` separator) are discounted by `0.50×`
+in the search service. Qualified identifiers like `Parser.run` retain full score. This prevents
+generic identifiers (`model`, `name`) from outranking path-concordant FTS results.
+
+### Path-concordant seed selection
+
+Primary seed selection now prioritizes candidates whose filename contains a query term (≥6 chars).
+This ensures the correct file (e.g., `sidebar.go`) becomes the seed for graph expansion, even when
+generic exact matches exist for other query terms.

@@ -356,3 +356,67 @@ The revamp is complete only when:
 4. Implement R0 only.
 5. Re-run the full quality gate.
 6. Continue to R1 only after the baseline is green.
+
+## Implemented retrieval quality improvements (2026-08-02)
+
+Scope: confidence scoring, lexical ranking, task resolution — addressing low confidence on
+UI/TUI tasks and weak lexical search narrowing.
+
+### Changes
+
+1. **Boosted lexical primary certainty** (`confidence.py`):
+   - `lexical` certainty tier: `0.65 → 0.80`.
+   - Added `path_lexical` tier at `0.85` for file/chunk entities with lexical score ≥ 0.70.
+   - Impact: lexical match weighted contribution rises from 0.26 to 0.34 (path_lexical) out of
+     0.40 max. Combined with widening, tasks like "display model name in sidebar" now reach
+     confidence ≥ 0.80 after one pass.
+
+2. **Rebalanced ranker weights** (`ranker.py`):
+   - `LEXICAL_WEIGHT`: `0.15 → 0.25` (+67% signal for lexical hits).
+   - `SEMANTIC_WEIGHT`: `0.10 → 0.00` (disabled; weight reclaimed for lexical).
+   - `ENABLED_WEIGHT_TOTAL`: `0.90 → 1.0` (full weight distribution).
+   - `EXACT_WEIGHT` and `GRAPH_WEIGHT` unchanged (0.45, 0.20).
+
+3. **Added UI/UX action patterns** (`resolver.py`):
+   - New CHANGE keywords: `display`, `show`, `render`, `style`, `layout`, `position`, `place`,
+     `hide`, `toggle`, `animate`.
+   - Tasks like "hiển thị tên model ở sidebar" now classify as CHANGE instead of UNKNOWN,
+     which triggers the correct widening path and expected-role set.
+
+4. **Added compound lexical queries** (`resolver.py`):
+   - Adjacent meaningful identifier pairs are now emitted as compound FTS5 queries
+     (e.g., "model sidebar", "name display").
+   - FTS5 AND with narrower terms produces fewer false positives and higher BM25 scores
+     for the intended file.
+
+### What was not changed
+
+- **Expected roles for CHANGE**: Adding INTERFACE/IMPLEMENTATION was prototyped but reverted;
+  it breaks the widening test (widener receives 5 roles instead of 3) and role_coverage weight
+  is only 0.15 — compound queries + path_lexical provide sufficient confidence boost instead.
+- **Auto-retry on degraded**: Belongs in the MCP/CLI layer, not the retrieval engine.
+  NextActionKind.EXPAND already exists for this path.
+- **String literal indexing**: Chunks already index full source_text including string literals.
+  The weak-match symptom was caused by BM25 scoring, addressed by compound queries and weight
+  rebalance.
+
+### Verification
+
+- Full pytest: 192 passed, 1 skipped (Windows symlink).
+- Pyright strict: 0 errors, 0 warnings.
+- Ruff format + lint: clean.
+- Updated test assertions in `test_ranker.py` for new `ENABLED_WEIGHT_TOTAL == 1.0`.
+
+### Additional changes (same session)
+
+5. **Single-word exact match discount** (`search/service.py`):
+   - Exact symbol matches for single-word queries (no `.` separator) are discounted by `0.50×`.
+   - Prevents generic identifiers (`model`, `name`, `display`) from dominating path-specific FTS
+     hits. Qualified identifiers like `Parser.run` are unaffected.
+
+6. **Path-concordant seed selection** (`retriever.py`):
+   - `_select_primary_seeds` now accepts `query_terms` and prioritizes candidates whose filename
+     contains a query term (≥6 chars). This promotes file-level hits (e.g., `sidebar.go` for
+     "sidebar") over unrelated exact symbol matches during seed selection.
+   - Graph expansion then runs from the correct file, discovering related callers/dependencies.
+

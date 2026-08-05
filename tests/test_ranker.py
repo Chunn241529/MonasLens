@@ -111,7 +111,7 @@ def test_disabled_semantic_weight_cannot_change_order(
     ranked = rank_candidates(candidates)
 
     assert _ranked_json(ranked) == expected
-    assert pytest.approx(0.90) == ENABLED_WEIGHT_TOTAL
+    assert pytest.approx(1.0) == ENABLED_WEIGHT_TOTAL
     assert all(item.components.semantic == 0.0 for item in ranked)
 
 

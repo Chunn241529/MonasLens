@@ -59,6 +59,9 @@ _ACTION_PATTERNS: dict[TaskAction, tuple[re.Pattern[str], ...]] = {
         re.compile(r"\b(?:add|implement|create|write|introduce|insert)\b", re.I),
         re.compile(r"\b(?:remove|delete|drop|strip|eliminate)\b", re.I),
         re.compile(r"\b(?:update|modify|change|edit|adjust)\b", re.I),
+        re.compile(
+            r"\b(?:display|show|render|style|layout|position|place|hide|toggle|animate)\b", re.I
+        ),
     ),
     TaskAction.REFACTOR: (
         re.compile(
@@ -386,10 +389,19 @@ def _build_lexical_queries(
             queries.append(phrase)
 
     # Add meaningful identifiers as queries
+    meaningful: list[str] = []
     for ident in identifiers:
         if ident not in seen and len(ident) >= 3:
             seen.add(ident)
             queries.append(ident)
+            meaningful.append(ident)
+
+    # Add adjacent-pair compound queries for better FTS narrowing
+    for i in range(len(meaningful) - 1):
+        compound = f"{meaningful[i]} {meaningful[i + 1]}"
+        if compound not in seen:
+            seen.add(compound)
+            queries.append(compound)
 
     return queries[:MAX_LEXICAL_QUERIES]
 

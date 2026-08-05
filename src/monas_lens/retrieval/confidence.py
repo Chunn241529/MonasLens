@@ -44,7 +44,8 @@ PRIMARY_CERTAINTY_TABLE: Mapping[str, float] = MappingProxyType(
         "missing": 0.0,
         "ambiguous": 0.35,
         "fallback": 0.40,
-        "lexical": 0.65,
+        "lexical": 0.80,
+        "path_lexical": 0.85,
         "explicit_focus": 0.85,
         "exact": 0.95,
         "exact_explicit_focus": 1.0,
@@ -364,6 +365,12 @@ def _primary_target_certainty(top: RankedCandidate | None, ambiguous: bool) -> f
     if top.explicit_focus:
         return PRIMARY_CERTAINTY_TABLE["explicit_focus"]
     if top.components.lexical > 0:
+        # Path concordance: file-level hits with high lexical score signal strong relevance
+        if (
+            top.candidate.entity_type in {EntityType.FILE, EntityType.CHUNK}
+            and top.components.lexical >= 0.70
+        ):
+            return PRIMARY_CERTAINTY_TABLE["path_lexical"]
         return PRIMARY_CERTAINTY_TABLE["lexical"]
     return PRIMARY_CERTAINTY_TABLE["fallback"]
 
